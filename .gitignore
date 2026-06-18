@@ -45,8 +45,8 @@ tmp_*.py
 tmp/
 *.tmp
 
-# Large sample data (uncomment if you want to exclude input/ from repo)
-# input/
+# Sample data (large; users should use their own PSG recordings or download separately if provided)
+input/
 
 # PyInstaller
 *.manifest
