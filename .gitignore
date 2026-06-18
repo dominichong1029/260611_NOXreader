@@ -50,4 +50,4 @@ tmp/
 
 # PyInstaller
 *.manifest
-*.spec.bak
+NoxPSGViewer.spec  # generated with local paths, ignore
