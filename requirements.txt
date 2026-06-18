@@ -1,0 +1,20 @@
+# Core GUI
+PyQt6>=6.5
+pyqtgraph>=0.13
+
+# Scientific / data
+numpy>=1.24
+
+# PSG / medical data support
+pyedflib>=0.1.30
+python-docx>=0.8.11
+openpyxl>=3.0.0
+
+# Optional: for very old .xls event files (Nox legacy OLE2 format)
+# xlrd==1.2.0
+
+# Notes:
+# - Python 3.10+ recommended (tested on 3.10 / 3.11 / 3.12)
+# - On Windows, install Python from python.org and check "Add python.exe to PATH"
+# - start.bat will auto-run: pip install -r requirements.txt
+# - For offline deployment, pre-install these packages on target machines.
