@@ -51,3 +51,10 @@ input/
 # PyInstaller
 *.manifest
 PSGviewer.spec  # generated with local paths, ignore
+
+# 打包產物（勿提交，體積大）
+/Release/
+/dist/
+/build/
+build_pyi.log
+/PSGviewer.spec
