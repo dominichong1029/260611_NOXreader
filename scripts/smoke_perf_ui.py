@@ -59,11 +59,25 @@ def main() -> int:
     pump(app, 3000)  # 等分批填表完成
 
     total_filtered = len(v._get_filtered_events())
-    rows = v.events_table.rowCount()
-    print(f"[D] 過濾後事件數={total_filtered}  事件表列數={rows}")
-    assert rows == total_filtered, f"D: 表格列數({rows}) != 全部事件({total_filtered})，疑似截斷或未填完"
-    assert v._evt_fill_timer is None, "D: 分批填表 timer 未正確結束"
+    rows = v.events_proxy.rowCount()           # 虛擬化：透過 proxy 取列數
+    src_rows = v.events_model.rowCount()
+    print(f"[D] 過濾後事件數={total_filtered}  模型列數={src_rows}  proxy列數={rows}")
+    assert rows == total_filtered, f"D: 表格列數({rows}) != 全部事件({total_filtered})，疑似截斷"
+    assert src_rows == total_filtered, f"D: 模型列數({src_rows}) != 全部事件({total_filtered})"
     assert total_filtered > 500, f"D: 測試前提失敗，事件數應 >500（實際 {total_filtered}）"
+
+    # 虛擬化驗證：排序正確（依 rel_s 升冪）+ 雙擊跳轉用精確秒數
+    from PyQt6.QtCore import Qt as _Qt
+    src0 = v.events_proxy.mapToSource(v.events_proxy.index(0, 1))
+    src1 = v.events_proxy.mapToSource(v.events_proxy.index(1, 1))
+    r0 = v.events_model.rel_start_at(src0.row())
+    r1 = v.events_model.rel_start_at(src1.row())
+    print(f"[D] 排序檢查：第1列rel={r0:.1f}  第2列rel={r1:.1f}（應遞增）")
+    assert r0 is not None and r1 is not None and r0 <= r1, "D: 預設未依時間升冪排序"
+    # 雙擊第一列應跳轉到該事件時間（用模型的精確 rel_start）
+    v._on_event_row_activated(v.events_proxy.index(0, 0))
+    pump(app, 300)
+    print(f"[D] 雙擊第1列後 time_start={v.time_start:.1f}（目標事件rel={r0:.1f}）")
 
     # C: 設定窄視窗，標記只畫可視範圍
     md = v.max_duration
@@ -117,6 +131,67 @@ def main() -> int:
     pump(app, 400)
     assert v.antialias_on is True, "B: antialias_on 未變回 True"
     print(f"[B] 抗鋸齒切換 OK（curve 資料點 before={before} after={after}）")
+
+    # E: 虛擬化模型其餘正確性 —— 降冪排序、佔位訊息、資料角色（背景色/tooltip/排序鍵）
+    from PyQt6.QtCore import Qt as _Qt2
+    v.events_proxy.sort(1, _Qt2.SortOrder.DescendingOrder)
+    d0 = v.events_model.rel_start_at(v.events_proxy.mapToSource(v.events_proxy.index(0, 1)).row())
+    d1 = v.events_model.rel_start_at(v.events_proxy.mapToSource(v.events_proxy.index(1, 1)).row())
+    assert d0 >= d1, "E: 降冪排序錯誤"
+    print(f"[E] 降冪排序 OK（第1列rel={d0:.1f} >= 第2列rel={d1:.1f}）")
+
+    # 資料角色：時間欄右對齊、tooltip 非空、排序鍵為數值；找一筆有背景色(無匹配/例外)的列
+    idx_disp = v.events_model.index(0, 1)
+    assert v.events_model.data(idx_disp, _Qt2.ItemDataRole.DisplayRole), "E: 顯示字串為空"
+    assert v.events_model.data(idx_disp, psg_viewer._EventTableModel.SORT_ROLE) is not None, "E: 排序鍵缺失"
+    assert v.events_model.data(v.events_model.index(0, 5), _Qt2.ItemDataRole.ToolTipRole), "E: tooltip 為空"
+    n_bg = sum(1 for r in range(v.events_model.rowCount())
+               if v.events_model.data(v.events_model.index(r, 0), _Qt2.ItemDataRole.BackgroundRole) is not None)
+    print(f"[E] 帶背景色(無匹配/例外)的列數={n_bg}（全選通常含無匹配事件，應>0）")
+    assert n_bg > 0, "E: 無任何背景色列，疑似無匹配/例外著色遺失"
+
+    # 佔位訊息狀態不崩潰
+    v._show_events_message("測試訊息")
+    assert v.events_model.rowCount() == 1, "E: 佔位訊息列數應為 1"
+    assert v.events_model.data(v.events_model.index(0, 0), _Qt2.ItemDataRole.DisplayRole) == "測試訊息"
+    print("[E] 佔位訊息狀態 OK")
+
+    # F: 全長 + 顯示於所有通道（最重情境）—— 像素合併應把物件數壓到遠低於 事件×通道×2
+    v.events_proxy.sort(1, _Qt2.SortOrder.AscendingOrder)
+    if hasattr(v, 'chk_display_all_channels') and v.chk_display_all_channels:
+        v.chk_display_all_channels.setChecked(True)
+    v.time_start = 0.0
+    v.time_duration = v.max_duration  # Fit 全長
+    t0 = time.monotonic()
+    v._perform_update_view()
+    pump(app, 1500)
+    dt = time.monotonic() - t0
+    n_vis = len(v.visible_channels)
+    full_in_view = len(v._events_in_view(v._get_filtered_events()))
+    marker_full = len(getattr(v, 'event_marker_items', []))
+    naive = full_in_view * n_vis * 2  # 不合併時的數量級（線+區段）
+    print(f"[F] 全長+show_all：事件={full_in_view} 通道={n_vis} → 合併後物件={marker_full} "
+          f"(naive≈{naive}, 壓縮比≈{marker_full/max(naive,1)*100:.1f}%, 重繪{dt*1000:.0f}ms)")
+    assert marker_full > 0, "F: 全長下無標記，疑似漏畫"
+    assert marker_full < naive * 0.25, f"F: 合併未生效（{marker_full} 未顯著小於 naive {naive}）"
+    # 蒙層（背景黃色 band）全長+show_all 也應合併到遠低於 naive
+    v.time_start = 0.0
+    v.time_duration = v.max_duration
+    v.show_event_background_overlay = True
+    v._add_event_time_overlays()
+    pump(app, 800)
+    ov = len(getattr(v, 'event_overlay_regions', []))
+    print(f"[F] 蒙層全長+show_all：合併後 region={ov}（naive≈{full_in_view*n_vis}）")
+    assert 0 < ov < full_in_view * n_vis * 0.5, f"F: 蒙層合併未生效（{ov}）"
+    v.show_event_background_overlay = False
+    v._clear_event_overlays()
+
+    # 放大到 30s：個別標記應還原（縮放細節變化）
+    v.time_duration = 30.0
+    v.time_start = v.max_duration * 0.5
+    v._perform_update_view()
+    pump(app, 500)
+    print(f"[F] 放大30s 後物件={len(getattr(v, 'event_marker_items', []))}（縮放細節隨之變化）")
 
     print("\n全部煙霧測試 PASS")
     return 0

@@ -23,13 +23,16 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QToolTip,
+    QTableWidget, QTableWidgetItem, QTableView, QHeaderView, QPushButton, QToolTip,
     QLabel, QComboBox, QSpinBox, QDoubleSpinBox, QSlider, QToolBar, QMenuBar,
     QFileDialog, QMessageBox, QTextEdit, QGroupBox, QFormLayout, QCheckBox,
     QProgressBar, QStatusBar, QAbstractItemView, QFrame, QGridLayout, QScrollArea, QSizePolicy, QLineEdit,
     QDialog, QListWidget, QListWidgetItem, QMenu, QStyle, QStyleOptionViewItem,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSettings, QSize, QEvent, QRect
+from PyQt6.QtCore import (
+    Qt, QTimer, pyqtSignal, QSettings, QSize, QEvent, QRect,
+    QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
+)
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QColor, QGuiApplication, QCursor
 
 import pyqtgraph as pg
@@ -123,22 +126,82 @@ class _NumericCountItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
-class _NumericTimeItem(QTableWidgetItem):
-    """事件表「開始/結束時間、持續時間」欄專用 item。
-    排序鍵用 UserRole 的浮點數（相對全域原點的秒數 rel_s），而非顯示字串。
-    顯示字串是不含日期的牆鐘 hh:mm:ss，跨午夜時字串排序會錯（如 03:00 < 23:55），
-    用單調遞增的 rel_s 當鍵就等同「加上隱藏日期一起排序」，升/降序都正確。
+class _EventTableModel(QAbstractTableModel):
+    """事件表的虛擬化資料模型（QTableView 用）。
+    只保存純資料 list，畫面只渲染可見列 → 規模無關、上萬列瞬開、不需分批/不凍結。
+    每列預先算好顯示字串、排序鍵、背景色與 tooltip（_build_event_row_dict 產生）。
+    時間欄排序鍵用 rel_s（相對全域原點秒數，跨午夜單調）而非顯示字串，升/降序皆正確。
     """
-    def __lt__(self, other: QTableWidgetItem) -> bool:
-        if isinstance(other, QTableWidgetItem):
-            my_val = self.data(Qt.ItemDataRole.UserRole)
-            other_val = other.data(Qt.ItemDataRole.UserRole)
-            if my_val is not None and other_val is not None:
-                try:
-                    return float(my_val) < float(other_val)
-                except (ValueError, TypeError):
-                    pass
-        return super().__lt__(other)
+    COLUMNS = ["跳轉", "開始時間", "結束時間", "持續時間", "名稱", "備註"]
+    SORT_ROLE = Qt.ItemDataRole.UserRole + 1
+    RIGHT_COLS = {1, 2, 3}
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rows: list = []      # 每筆: {disp:[6], sort:[6], rel_start, bg:QColor|None, tip:str}
+        self._message = None       # 佔位訊息（未載入/無資料時顯示單列）
+
+    def set_rows(self, rows):
+        self.beginResetModel()
+        self._rows = rows
+        self._message = None
+        self.endResetModel()
+
+    def set_message(self, msg):
+        self.beginResetModel()
+        self._rows = []
+        self._message = msg
+        self.endResetModel()
+
+    def rel_start_at(self, source_row):
+        if 0 <= source_row < len(self._rows):
+            return self._rows[source_row].get('rel_start')
+        return None
+
+    def rowCount(self, parent=QModelIndex()):
+        if parent.isValid():
+            return 0
+        if self._message is not None:
+            return 1
+        return len(self._rows)
+
+    def columnCount(self, parent=QModelIndex()):
+        if parent.isValid():
+            return 0
+        return len(self.COLUMNS)
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if orientation == Qt.Orientation.Horizontal:
+            if 0 <= section < len(self.COLUMNS):
+                return self.COLUMNS[section]
+            return None
+        # 垂直表頭：1-based 列號（與舊 QTableWidget 一致，跟隨排序後的視覺順序）
+        return section + 1
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        r, c = index.row(), index.column()
+        if self._message is not None:
+            if role == Qt.ItemDataRole.DisplayRole and c == 0:
+                return self._message
+            return None
+        if r < 0 or r >= len(self._rows):
+            return None
+        row = self._rows[r]
+        if role == Qt.ItemDataRole.DisplayRole:
+            return row['disp'][c]
+        if role == self.SORT_ROLE:
+            return row['sort'][c]
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return row['tip']
+        if role == Qt.ItemDataRole.BackgroundRole:
+            return row['bg']
+        if role == Qt.ItemDataRole.TextAlignmentRole and c in self.RIGHT_COLS:
+            return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return None
 
 
 class TimeAxisItem(pg.AxisItem):
@@ -446,12 +509,6 @@ class PSGViewer(QMainWindow):
         self._update_debounce_timer = QTimer(self)
         self._update_debounce_timer.setSingleShot(True)
         self._update_debounce_timer.timeout.connect(self._perform_update_view)
-
-        # D: 事件表分批建列（大量事件時避免一次建上萬列凍結 UI）
-        self._evt_fill_timer: QTimer | None = None
-        self._evt_fill_events: list = []
-        self._evt_fill_idx: int = 0
-        self._evt_total: int = 0
 
         self.parsed_events: list[dict] = []
         self._events_loaded: bool = False  # 預設 False：只有使用者主動「載入事件資料」後才解讀所有標記，勾選時才繪製
@@ -925,18 +982,26 @@ class PSGViewer(QMainWindow):
         self.events_label = QLabel("事件標記")
         events_content_layout.addWidget(self.events_label)
 
-        self.events_table = QTableWidget()
-        self.events_table.setColumnCount(6)
-        self.events_table.setHorizontalHeaderLabels(["跳轉", "開始時間", "結束時間", "持續時間", "名稱", "備註"])
-        # 每個欄位都設為 Interactive，讓使用者可以手動拖拉標題分隔線調整寬度（跳轉/開始/結束/持續/名稱/備註）
+        # 真虛擬化：QTableView + 資料模型 + 排序 proxy。只渲染可見列，上萬列瞬開不凍結。
+        self.events_model = _EventTableModel(self)
+        self.events_proxy = QSortFilterProxyModel(self)
+        self.events_proxy.setSortRole(_EventTableModel.SORT_ROLE)
+        self.events_proxy.setSourceModel(self.events_model)
+        self.events_table = QTableView()
+        self.events_table.setModel(self.events_proxy)
+        # 每個欄位 Interactive 可手動拖拉寬度（跳轉/開始/結束/持續/名稱/備註）
         header = self.events_table.horizontalHeader()
         for i in range(6):
             header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
-        header.setMinimumSectionSize(32)  # 允許欄位縮得更窄，降低表格 sizeHint，避免主視窗 minSize 過大導致小螢幕 geometry 錯誤；使用者仍可手動拖拉調整
+        header.setMinimumSectionSize(32)  # 允許欄位縮得更窄，降低 sizeHint，避免小螢幕 geometry 問題
+        header.setResizeContentsPrecision(50)  # 限制 resizeToContents 掃描列數，保住虛擬化效能
         self.events_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.events_table.cellDoubleClicked.connect(self._on_event_double_clicked)
+        self.events_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.events_table.setWordWrap(False)
         self.events_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.events_table.setSortingEnabled(True)
+        # 雙擊任一列跳轉（取代舊的每列「→」按鈕；按鈕在虛擬化下不可行且耗資源）
+        self.events_table.doubleClicked.connect(self._on_event_row_activated)
         events_content_layout.addWidget(self.events_table, 1)
 
         self.events_note_label = QLabel("")
@@ -1926,103 +1991,61 @@ class PSGViewer(QMainWindow):
     # ==================== 事件表 ====================
 
     def _populate_events_table(self):
-        self._cancel_event_table_fill()  # 取消任何進行中的分批填表，避免寫入已清空的表
-        self.events_table.setRowCount(0)
         if hasattr(self, 'events_note_label') and self.events_note_label:
             self.events_note_label.setText("")
         if not self.current_rec:
-            self.events_table.setSortingEnabled(False)
+            self._show_events_message("")
             return
-
-        self.events_table.setSortingEnabled(False)
-        self.events_table.blockSignals(True)
-
         if not getattr(self, '_events_loaded', False):
-            row = self.events_table.rowCount()
-            self.events_table.insertRow(row)
-            msg = QTableWidgetItem("請先載入事件資料（上方事件篩選）")
-            self.events_table.setItem(row, 0, msg)
-            self.events_table.setSpan(row, 0, 1, 6)
-            self.events_table.blockSignals(False)
-            self.events_table.setSortingEnabled(False)
-            if hasattr(self, 'events_note_label') and self.events_note_label:
-                self.events_note_label.setText("")
+            self._show_events_message("請先載入事件資料（上方事件篩選）")
             return
-
-        # issue1: 先解析並儲存含 rel time + 供圖表使用 (只在已載入時)
+        # 先解析並儲存含 rel time + 供圖表使用 (只在已載入時)
         self._parse_and_store_events()
         events = self._get_filtered_events()
         if not events:
-            row = self.events_table.rowCount()
-            self.events_table.insertRow(row)
-            if not self.selected_event_channels:
-                msg = QTableWidgetItem("請從上方勾選事件通道")
-            else:
-                msg = QTableWidgetItem("所選項目無事件資料")
-            self.events_table.setItem(row, 0, msg)
-            self.events_table.setSpan(row, 0, 1, 6)
-            self.events_table.blockSignals(False)
-            self.events_table.setSortingEnabled(False)
-            if hasattr(self, 'events_note_label') and self.events_note_label:
-                self.events_note_label.setText("")
+            msg = "請從上方勾選事件通道" if not self.selected_event_channels else "所選項目無事件資料"
+            self._show_events_message(msg)
             return
 
-        # 顯示全部事件，無任何硬上限（醫療軟體要求完整呈現）；_NumericTimeItem 以 rel_s 排序。
-        # 大量事件改「分批建列」避免一次建上萬列 + 上萬個跳轉按鈕凍結 UI。
-        # blockSignals(True)/setSortingEnabled(False) 維持到分批完成（_finish_event_table_fill）才釋放。
-        self._evt_total = len(events)
-        self._start_event_table_fill(events)
+        # 真虛擬化：把全部事件丟給模型，畫面只渲染可見列（不截斷、不分批、不凍結）。
+        rows = [self._build_event_row_dict(ev) for ev in events]
+        self.events_table.clearSpans()
+        self.events_model.set_rows(rows)
+        self.events_proxy.sort(1, Qt.SortOrder.AscendingOrder)  # 預設依開始時間（rel_s）升冪
+        self.events_table.horizontalHeader().setSortIndicator(1, Qt.SortOrder.AscendingOrder)
+        self._apply_event_column_widths()
 
-    # ---- D: 事件表分批建列 ----
-    _EVT_FILL_BATCH = 200  # 每批建列數；小於此值的表一次建完（避免 timer 開銷與閃爍）
+        label = f"事件標記 - 共 {len(events)} 筆"
+        if hasattr(self, 'chk_display_all_channels') and self.chk_display_all_channels and self.chk_display_all_channels.isChecked():
+            label += "（含所有通道）"
+        self.events_label.setText(label)
 
-    def _cancel_event_table_fill(self):
-        """取消進行中的分批填表（切換選取/重填前呼叫）。"""
-        t = getattr(self, '_evt_fill_timer', None)
-        if t is not None:
-            try:
-                t.stop()
-            except Exception:
-                pass
-            self._evt_fill_timer = None
-        self._evt_fill_events = []
-        self._evt_fill_idx = 0
+    def _show_events_message(self, msg):
+        """事件表顯示單列佔位訊息（未載入 / 無資料）。"""
+        self.events_table.clearSpans()
+        self.events_model.set_message(msg)
+        try:
+            self.events_table.setSpan(0, 0, 1, len(_EventTableModel.COLUMNS))
+        except Exception:
+            pass
+        self.events_label.setText("事件標記")
 
-    def _start_event_table_fill(self, display_events):
-        n = len(display_events)
-        self.events_table.setRowCount(n)
-        self._evt_fill_events = display_events
-        self._evt_fill_idx = 0
-        if n <= self._EVT_FILL_BATCH:
-            self._fill_event_rows(0, n)
-            self._finish_event_table_fill()
-            return
-        # 先同步建第一批（首屏立即可見），其餘交給 timer 分批
-        self._fill_event_rows(0, self._EVT_FILL_BATCH)
-        self._evt_fill_idx = self._EVT_FILL_BATCH
-        self._evt_fill_timer = QTimer(self)
-        self._evt_fill_timer.timeout.connect(self._fill_event_rows_tick)
-        self._evt_fill_timer.start(0)  # 0ms：讓出事件迴圈後立即續建，UI 保持可操作
+    def _apply_event_column_widths(self):
+        """時間相關欄位依內容初始寬度 + 上限（precision 已限制掃描列數，保住虛擬化效能）。"""
+        try:
+            for col in (0, 1, 2, 3):  # 跳轉 + 開始/結束/持續
+                self.events_table.resizeColumnToContents(col)
+            caps = {0: 42, 1: 92, 2: 92, 3: 65, 4: 78, 5: 68}
+            for col, mw in caps.items():
+                if self.events_table.columnWidth(col) > mw:
+                    self.events_table.setColumnWidth(col, mw)
+            self.events_table.setMinimumWidth(130)
+            self.events_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        except Exception:
+            pass
 
-    def _fill_event_rows_tick(self):
-        evs = self._evt_fill_events
-        start = self._evt_fill_idx
-        end = min(start + self._EVT_FILL_BATCH, len(evs))
-        self._fill_event_rows(start, end)
-        self._evt_fill_idx = end
-        if end >= len(evs):
-            if self._evt_fill_timer is not None:
-                self._evt_fill_timer.stop()
-                self._evt_fill_timer = None
-            self._finish_event_table_fill()
-
-    def _fill_event_rows(self, start, end):
-        evs = self._evt_fill_events
-        for idx in range(start, end):
-            self._build_event_row(idx, evs[idx])
-
-    def _build_event_row(self, idx, ev):
-        """建立事件表單一列（供分批填表呼叫）。"""
+    def _build_event_row_dict(self, ev):
+        """把單一事件 dict 轉成虛擬化模型用的一列（顯示字串 + 排序鍵 + 背景色 + tooltip）。"""
         rel_s = ev.get("rel_start", None)
         if rel_s is None:
             ts = ev.get("starts_at") or ev.get("starts") or 0
@@ -2031,13 +2054,12 @@ class PSGViewer(QMainWindow):
         if rel_e is None or rel_e < rel_s:
             rel_e = rel_s
 
-        # 事件表時間欄一律顯示絕對牆鐘時間，並以錄音原點(EDF start)為 0 基準排序，
-        # 不受「X軸顯示絕對時間」選單影響；排序鍵用 rel_s（與絕對時間單調一致）。
+        # 時間欄一律顯示絕對牆鐘時間；排序鍵用 rel_s（跨午夜單調），不受 X軸選單影響。
         start_str = self._abs_clock_str(rel_s, include_ms=True) if rel_s is not None else "-"
-        has_end_data = self._event_has_meaningful_end(ev)
-        end_str = self._abs_clock_str(rel_e, include_ms=True) if has_end_data else "-"
-        dur = rel_e - rel_s if has_end_data else 0
-        dur_str = f"{dur:.3f} s" if has_end_data else "-"
+        has_end = self._event_has_meaningful_end(ev)
+        end_str = self._abs_clock_str(rel_e, include_ms=True) if has_end else "-"
+        dur = rel_e - rel_s if has_end else 0
+        dur_str = f"{dur:.3f} s" if has_end else "-"
 
         type_ = str(ev.get("type", ""))
         loc = ev.get('table_position', str(ev.get("location", "")))
@@ -2049,49 +2071,14 @@ class PSGViewer(QMainWindow):
 
         is_no_match = ev.get('is_no_match', False) or self._is_unmatched_event(ev)
         exc_mapped = ev.get('exception_matched_to')
+        if is_no_match and not remark.startswith("[無法匹配"):
+            remark = "[無法匹配 channel] " + remark
+
+        bg = None
         if is_no_match:
-            if not remark.startswith("[無法匹配"):
-                remark = "[無法匹配 channel] " + remark
-
-        # 跳轉欄移到最左 (col 0)，其餘順移
-        btn = QPushButton("→")
-        btn.setProperty("rel_sec", rel_s)
-        btn.clicked.connect(self._jump_from_event_button)
-        self.events_table.setCellWidget(idx, 0, btn)
-        if is_no_match:
-            btn.setStyleSheet("background-color: #ffffcc;")
-
-        # 時間/持續欄用 _NumericTimeItem：以 rel_s（相對原點秒數，跨午夜單調）為排序鍵，
-        # 而非顯示字串，避免「03:00 < 23:55」這種跨午夜字串排序錯誤。
-        start_item = _NumericTimeItem(start_str)
-        start_item.setData(Qt.ItemDataRole.UserRole, rel_s if rel_s is not None else -1.0)
-        self.events_table.setItem(idx, 1, start_item)
-
-        end_item = _NumericTimeItem(end_str)
-        end_item.setData(Qt.ItemDataRole.UserRole, rel_e if has_end_data else -1.0)
-        self.events_table.setItem(idx, 2, end_item)
-
-        dur_item = _NumericTimeItem(dur_str)
-        dur_item.setData(Qt.ItemDataRole.UserRole, dur if has_end_data else 0.0)
-        self.events_table.setItem(idx, 3, dur_item)
-
-        self.events_table.setItem(idx, 4, QTableWidgetItem(loc))
-        remark_item = QTableWidgetItem(remark)
-        self.events_table.setItem(idx, 5, remark_item)
-
-        if is_no_match:
-            light_bg = QColor(255, 255, 200)
-            for col in range(6):
-                it = self.events_table.item(idx, col)
-                if it:
-                    it.setBackground(light_bg)
-            remark_item.setToolTip("【無法匹配任何 raw data Channel，獨立被記錄的 event】\n" + (remark_item.toolTip() or ""))
+            bg = QColor(255, 255, 200)
         elif exc_mapped:
-            light_exc = QColor(232, 245, 233)
-            for col in range(6):
-                it = self.events_table.item(idx, col)
-                if it:
-                    it.setBackground(light_exc)
+            bg = QColor(232, 245, 233)
 
         full_tip = (
             f"開始: {start_str}\n"
@@ -2105,39 +2092,18 @@ class PSGViewer(QMainWindow):
         )
         if exc_mapped:
             full_tip = f"【通過例外列表匹配: {exc_mapped}】\n{full_tip}"
-        remark_item.setToolTip(full_tip)
-        for c in [1, 2, 3, 4]:
-            it = self.events_table.item(idx, c)
-            if it:
-                it.setToolTip(full_tip)
+        if is_no_match:
+            full_tip = "【無法匹配任何 raw data Channel，獨立被記錄的 event】\n" + full_tip
 
-    def _finish_event_table_fill(self):
-        """分批填表完成：釋放 signals、恢復排序、欄寬與標題標籤。"""
-        self.events_table.blockSignals(False)
-        self.events_table.setSortingEnabled(True)
-        self.events_table.horizontalHeader().setSortIndicator(1, Qt.SortOrder.AscendingOrder)
-
-        if hasattr(self, 'events_note_label') and self.events_note_label:
-            self.events_note_label.setText("")
-
-        # 讓時間相關欄位根據當前資料內容自動設定合理初始寬度...
-        try:
-            for col in (0, 1, 2, 3):  # 跳轉 + 開始/結束/持續
-                self.events_table.resizeColumnToContents(col)
-            if self.events_table.columnCount() >= 6:
-                caps = {0: 42, 1: 92, 2: 92, 3: 65, 4: 78, 5: 68}
-                for col, mw in caps.items():
-                    if self.events_table.columnWidth(col) > mw:
-                        self.events_table.setColumnWidth(col, mw)
-            self.events_table.setMinimumWidth(130)
-            self.events_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        except Exception:
-            pass
-
-        label = f"事件標記 - 共 {self._evt_total} 筆"
-        if hasattr(self, 'chk_display_all_channels') and self.chk_display_all_channels and self.chk_display_all_channels.isChecked():
-            label += "（含所有通道）"
-        self.events_label.setText(label)
+        rs_key = rel_s if rel_s is not None else -1.0
+        return {
+            'disp': ["→", start_str, end_str, dur_str, loc, remark],
+            'sort': [rs_key, rs_key, (rel_e if has_end else -1.0),
+                     (dur if has_end else 0.0), loc.lower(), remark.lower()],
+            'rel_start': rel_s,
+            'bg': bg,
+            'tip': full_tip,
+        }
 
     def _filetime_to_relative_seconds(self, ft: int) -> float:
         """粗略將 Windows FILETIME (100ns since 1601) 轉成相對錄音開始的秒數。
@@ -2185,34 +2151,16 @@ class PSGViewer(QMainWindow):
         if not getattr(self, '_loading_rec', False) and not getattr(self, '_updating_view', False):
             self._save_time_for_current()
 
-    def _jump_from_event_button(self):
-        sender = self.sender()
-        if not sender:
+    def _on_event_row_activated(self, index):
+        """雙擊事件列：用該列事件的 rel_start（精確相對原點秒數）跳轉並置中。
+        虛擬化模型直接給秒數，無需從顯示字串反解析（也修掉舊版把絕對時間誤當相對秒的問題）。
+        """
+        if not index or not index.isValid():
             return
-        rel = sender.property("rel_sec") or 0
-        if self.max_duration > 0:
-            self._jump_to_time(rel)  # 改為將事件開始時間置中在紅線上
-
-    def _on_event_double_clicked(self, row: int, col: int):
-        # 嘗試從表格第二欄（開始時間，跳轉欄已移至最左）讀時間並跳轉
-        item = self.events_table.item(row, 1)
-        if not item:
-            return
-        txt = item.text()
-        # 簡單解析 HH:MM:SS.mmm 成秒（支援毫秒事件時間）
-        try:
-            # 取第一個 : 分割的部分，移除 ms
-            time_part = txt.split(".")[0]
-            parts = [int(p) for p in time_part.split(":")]
-            if len(parts) == 3:
-                sec = parts[0]*3600 + parts[1]*60 + parts[2]
-            elif len(parts) == 2:
-                sec = parts[0]*60 + parts[1]
-            else:
-                sec = 0
-            self._jump_to_time(sec)  # 改為將事件開始時間置中在紅線上
-        except Exception:
-            pass
+        src = self.events_proxy.mapToSource(index)
+        rel = self.events_model.rel_start_at(src.row())
+        if rel is not None and self.max_duration > 0:
+            self._jump_to_time(rel)
 
     # ==================== 波形檢視 (pyqtgraph 核心) ====================
 
@@ -4219,33 +4167,40 @@ class PSGViewer(QMainWindow):
             self.chk_display_all_channels and
             self.chk_display_all_channels.isChecked()
         )
+        merge_gap = self._marker_merge_gap()
+        # 預先算每事件的蒙層區段（含 duration 正規化），不隨通道改變，避免 per-channel 重算。
+        prepared = []
+        for ev in to_overlay:
+            if not self._event_has_meaningful_end(ev):
+                # 沒有真實 end 資料 → 不畫 region（與表格一致顯示 - ）
+                continue
+            rs = float(ev.get("rel_start", 0.0))
+            re = float(ev.get("rel_end"))
+            dur = re - rs
+            if dur < 0.8 or (abs(rs - round(rs)) < 0.05 and dur < 1.5):
+                rs = float(int(rs))
+                re = rs + 1.0
+            rs = max(0.0, min(rs, self.max_duration))
+            re = max(rs + 0.05, min(re, self.max_duration))
+            prepared.append((ev, rs, re, self._is_unmatched_event(ev)))
+
+        brush = pg.mkBrush(255, 255, 140, 38)
+        pen = pg.mkPen(255, 200, 50, 90)
         for i, p in enumerate(self.plot_items):
             ch_name = self.visible_channels[i] if i < len(self.visible_channels) else ""
-            for ev in to_overlay:
-                if not self._event_has_meaningful_end(ev):
-                    # 沒有真實 end 資料 → 不畫 region（與表格一致顯示 - ）
-                    continue
-                is_unm = self._is_unmatched_event(ev)
-                matches = self._event_matches_channel(ev, ch_name)
+            intervals = []
+            for ev, rs, re, is_unm in prepared:
                 if is_unm:
+                    # 無匹配 event 只有在「在所有通道顯示」勾選時才貢獻黃色 band。
                     if not show_all:
-                        # 無匹配的 event 只有在「在所有通道顯示」勾選時才在所有通道貢獻黃色 band。
                         continue
-                    # when show_all, add the band on this p (will happen for every p)
-                elif not (matches or show_all):
-                    # 真實匹配的 event 與例外匹配 event：預設只在對應/目標 ch 畫黃色 band；只有 show_all 時才畫在所有 ch
+                # show_all 在前可短路，避免每通道對每事件做昂貴的 _event_matches_channel。
+                elif not (show_all or self._event_matches_channel(ev, ch_name)):
                     continue
-                rs = float(ev.get("rel_start", 0.0))
-                re = float(ev.get("rel_end"))
-                dur = re - rs
-                if dur < 0.8 or (abs(rs - round(rs)) < 0.05 and dur < 1.5):
-                    rs = float(int(rs))
-                    re = rs + 1.0
-                rs = max(0.0, min(rs, self.max_duration))
-                re = max(rs + 0.05, min(re, self.max_duration))
-                brush = pg.mkBrush(255, 255, 140, 38)
-                pen = pg.mkPen(255, 200, 50, 90)
-                region = pg.LinearRegionItem([rs, re], movable=False, brush=brush, pen=pen)
+                intervals.append((rs, re))
+            # 像素級合併重疊/相鄰區段後逐段畫（合併後數量已少，視覺無損、放大還原）。
+            for a, b in self._merge_intervals(intervals, merge_gap):
+                region = pg.LinearRegionItem([a, b], movable=False, brush=brush, pen=pen)
                 p.addItem(region)
                 self.event_overlay_regions.append(region)
 
@@ -4688,85 +4643,149 @@ class PSGViewer(QMainWindow):
             self.chk_display_all_channels and
             self.chk_display_all_channels.isChecked()
         )
+        # 像素級合併門檻（秒）：約 1px 對應的視窗秒數。縮放遠時門檻變大 → 密集標記合併，
+        # 把原本上萬個重疊的 InfiniteLine/region 壓成數十個物件（視覺無損，放大自動還原細節）。
+        merge_gap = self._marker_merge_gap()
+        # 預先算每事件的共用屬性（不隨通道改變），避免在 plot 迴圈內重複計算。
+        prepared = []
+        for ev in to_mark:
+            rs = ev.get("rel_start", -1)
+            if rs < 0 or rs > self.max_duration:
+                continue
+            is_unm = self._is_unmatched_event(ev)
+            has_end = self._event_has_meaningful_end(ev)
+            re_clip = min(float(ev.get("rel_end")), self.max_duration) if has_end else None
+            prepared.append((ev, rs, is_unm, has_end, re_clip))
+
         for i, p in enumerate(self.plot_items):
             ch_name = self.visible_channels[i] if i < len(self.visible_channels) else ""
-            last_label_time = -1e99  # 用於避免標籤堆疊，僅顯示間隔足夠的一個（縮放時閾值自動變小）
-            for ev in to_mark:
-                rs = ev.get("rel_start", -1)
-                if rs < 0 or rs > self.max_duration:
-                    continue
-                is_unm = self._is_unmatched_event(ev)
-                matches = self._event_matches_channel(ev, ch_name)
-                has_end = self._event_has_meaningful_end(ev)
-
+            # 依視覺類別收集位置，稍後合併 + 批次繪製
+            red_lines = []      # 無匹配無結束：淡紅實線 #ff9999
+            gray_lines = []     # 無匹配有結束：灰點線 #888888（+灰區段）
+            gray_regions = []   # [x0,x1]
+            green_lines = []    # 匹配/全通道：綠虛線 #27ae60（+綠區段）
+            green_regions = []  # [x0,x1]
+            label_events = []   # (rs, ev) 供文字標籤（綠類）
+            for ev, rs, is_unm, has_end, re_clip in prepared:
                 if is_unm:
-                    # 無匹配的獨立 event（左列表 "xxx (無匹配)" 被選取）：
-                    # 只有當「在所有通道顯示」勾選 (show_all) 時，才在這個 p 畫 marker。
-                    # 如果沒有結束時間：只畫淡紅色細線（無寬度），用來標記發生時間點。
-                    # 如果有結束時間：畫線 + region。
-                    # 徹底解決 "沒有結束時間還是很寬一段黃色band" 的問題。
-                    # checkbox 未勾選時，表格仍顯示這些 event（時間、位置 xxx(無匹配)、備註），但波形上不畫任何 marker。
-                    if show_all:
-                        if not has_end:
-                            # 沒有結束時間的無匹配 event：淡紅色細線，沒有寬度
-                            color = "#ff9999"
-                            width = 1.5
-                            style = Qt.PenStyle.SolidLine
-                            line = pg.InfiniteLine(pos=rs, angle=90, pen=pg.mkPen(color, width=width, style=style))
-                            p.addItem(line)
-                            self.event_marker_items.append(line)
-                            # 絕對不畫任何 region
-                        else:
-                            color = "#888888"
-                            width = 1.0
-                            style = Qt.PenStyle.DotLine
-                            line = pg.InfiniteLine(pos=rs, angle=90, pen=pg.mkPen(color, width=width, style=style))
-                            p.addItem(line)
-                            self.event_marker_items.append(line)
-                            re_ = float(ev.get("rel_end"))
-                            re_clip = min(re_, self.max_duration)
-                            region = pg.LinearRegionItem([rs, re_clip], movable=False,
-                                                         brush=pg.mkBrush(128, 128, 128, 18),
-                                                         pen=pg.mkPen("#888888", width=0.5))
-                            p.addItem(region)
-                            self.event_marker_items.append(region)
-                elif matches or show_all:
-                    # 真實 channel 匹配的 event：
-                    # 預設只在對應 ch 畫綠色 start line；有 end 才畫 region。
-                    # show_all 時也畫在其他 ch，讓目前已選項的時間點在所有通道可見。
-                    color = "#27ae60"
-                    width = 1.0
-                    style = Qt.PenStyle.DashLine
-                    line = pg.InfiniteLine(pos=rs, angle=90, pen=pg.mkPen(color, width=width, style=style))
-                    p.addItem(line)
-                    self.event_marker_items.append(line)
+                    # 無匹配獨立 event：只有「在所有通道顯示」勾選時才畫（未勾選表格仍顯示）。
+                    if not show_all:
+                        continue
+                    if not has_end:
+                        red_lines.append(rs)
+                    else:
+                        gray_lines.append(rs)
+                        gray_regions.append((rs, re_clip))
+                # show_all 在前可短路，避免每通道對每事件做昂貴的 _event_matches_channel。
+                elif show_all or self._event_matches_channel(ev, ch_name):
+                    green_lines.append(rs)
                     if has_end:
-                        re_ = float(ev.get("rel_end"))
-                        re_clip = min(re_, self.max_duration)
-                        region = pg.LinearRegionItem([rs, re_clip], movable=False,
-                                                     brush=pg.mkBrush(39, 174, 96, 22),
-                                                     pen=pg.mkPen("#27ae60", width=0.5))
-                        p.addItem(region)
-                        self.event_marker_items.append(region)
-                    # 小標籤 (type @ location)，受「檢視 > 事件文字標籤」控制，預設關閉
-                    if getattr(self, 'show_event_text_labels', False):
+                        green_regions.append((rs, re_clip))
+                    label_events.append((rs, ev))
+
+            # 批次繪製（線合併成單一 PlotCurveItem；區段合併重疊/相鄰後逐段畫）
+            self._draw_marker_lines(p, red_lines, merge_gap, "#ff9999", 1.5, Qt.PenStyle.SolidLine)
+            self._draw_marker_lines(p, gray_lines, merge_gap, "#888888", 1.0, Qt.PenStyle.DotLine)
+            self._draw_marker_regions(p, gray_regions, merge_gap, (128, 128, 128, 18), "#888888")
+            self._draw_marker_lines(p, green_lines, merge_gap, "#27ae60", 1.0, Qt.PenStyle.DashLine)
+            self._draw_marker_regions(p, green_regions, merge_gap, (39, 174, 96, 22), "#27ae60")
+
+            # 文字標籤（受「檢視 > 事件文字標籤」控制，預設關閉；密集時自動稀疏）
+            if getattr(self, 'show_event_text_labels', False):
+                last_label_time = -1e99
+                min_sep = self.time_duration * 0.015
+                for rs, ev in label_events:
+                    if abs(rs - last_label_time) < min_sep:
+                        continue
+                    try:
                         label_text = str(ev.get("type", ""))[:10]
                         if ev.get("location"):
-                            label_text += " @"+str(ev.get("location",""))[:8]
-                        try:
-                            min_sep = self.time_duration * 0.015  # 約 1.5% 視窗寬，密集時只顯示少數；縮放後自動變小以顯示標籤
-                            if abs(rs - last_label_time) >= min_sep:
-                                ti = pg.TextItem(text=label_text, color="#1e8449", anchor=(0.0, 1.0))
-                                # y 位置偏上 (使用 plot 範圍上緣附近)
-                                vb = p.getViewBox()
-                                yr = vb.viewRange()[1] if vb else (0, 1)
-                                ytop = yr[1] - (yr[1]-yr[0])*0.12 if yr[1]>yr[0] else 0.8
-                                ti.setPos(rs, ytop)
-                                p.addItem(ti)
-                                self.event_label_items.append(ti)
-                                last_label_time = rs
-                        except Exception:
-                            pass
+                            label_text += " @" + str(ev.get("location", ""))[:8]
+                        ti = pg.TextItem(text=label_text, color="#1e8449", anchor=(0.0, 1.0))
+                        vb = p.getViewBox()
+                        yr = vb.viewRange()[1] if vb else (0, 1)
+                        ytop = yr[1] - (yr[1] - yr[0]) * 0.12 if yr[1] > yr[0] else 0.8
+                        ti.setPos(rs, ytop)
+                        p.addItem(ti)
+                        self.event_label_items.append(ti)
+                        last_label_time = rs
+                    except Exception:
+                        pass
+
+    def _marker_merge_gap(self) -> float:
+        """像素級合併門檻（秒）：約 1 個繪圖像素對應的視窗秒數。
+        視窗越寬（縮放越遠）門檻越大 → 密集標記合併；放大後門檻趨近 0 → 個別標記還原。"""
+        px = 0
+        try:
+            if self.plot_items:
+                vb = self.plot_items[0].getViewBox()
+                px = int(vb.geometry().width()) if vb else 0
+        except Exception:
+            px = 0
+        if px <= 0:
+            px = 1500  # 取不到寬度時的保守預設
+        dur = self.time_duration or 0.0
+        if dur <= 0:
+            return 0.0
+        return dur / float(px)
+
+    @staticmethod
+    def _merge_points(xs, gap):
+        """把相距 < gap 的點合併成單一代表點（已就視覺重疊，無損）。"""
+        if not xs:
+            return []
+        xs = sorted(xs)
+        if gap <= 0:
+            return xs
+        out = [xs[0]]
+        for x in xs[1:]:
+            if x - out[-1] >= gap:
+                out.append(x)
+        return out
+
+    @staticmethod
+    def _merge_intervals(intervals, gap):
+        """合併重疊或相距 <= gap 的 [x0,x1] 區段。"""
+        if not intervals:
+            return []
+        intervals = sorted(intervals)
+        merged = [list(intervals[0])]
+        for a, b in intervals[1:]:
+            if a - merged[-1][1] <= gap:
+                if b > merged[-1][1]:
+                    merged[-1][1] = b
+            else:
+                merged.append([a, b])
+        return merged
+
+    def _draw_marker_lines(self, p, xs, gap, color, width, style):
+        """把多條垂直起始線批次成單一 PlotCurveItem（connect='pairs'），先做像素合併。
+        以 ±BIG 的垂直線段 + ignoreBounds 確保全高顯示且不影響 Y 自動範圍。"""
+        pts = self._merge_points(xs, gap)
+        if not pts:
+            return
+        BIG = 1e9
+        arr = np.asarray(pts, dtype=float)
+        n = arr.shape[0]
+        X = np.empty(n * 2, dtype=float)
+        Y = np.empty(n * 2, dtype=float)
+        X[0::2] = arr
+        X[1::2] = arr
+        Y[0::2] = -BIG
+        Y[1::2] = BIG
+        curve = pg.PlotCurveItem(x=X, y=Y, connect='pairs',
+                                 pen=pg.mkPen(color, width=width, style=style))
+        p.addItem(curve, ignoreBounds=True)
+        self.event_marker_items.append(curve)
+
+    def _draw_marker_regions(self, p, intervals, gap, brush_rgba, pen_color):
+        """合併重疊/相鄰區段後逐段畫 LinearRegionItem（合併後數量已少）。"""
+        for a, b in self._merge_intervals(intervals, gap):
+            region = pg.LinearRegionItem([a, b], movable=False,
+                                         brush=pg.mkBrush(*brush_rgba),
+                                         pen=pg.mkPen(pen_color, width=0.5))
+            p.addItem(region)
+            self.event_marker_items.append(region)
 
     def closeEvent(self, event):
         # PR4: 關閉前保存最後狀態（visible、time window）。（已取消 style/scale UI）
