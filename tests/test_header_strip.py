@@ -299,24 +299,28 @@ def test_edf_fallback_merge_channels_and_get_data():
         chan_names = [c["name"] for c in chans]
         print("Merged channels:", chan_names)
 
-        # NDF 通道必須存在
-        assert "c3" in chan_names
-        assert "flow" in chan_names
-        # EDF only 必須被補上
+        # c3 / flow 同時存在於 NDF 與 EDF → 並列為 (EDF)/(NDF) 兩變體（不再 NDF 優先吃掉 EDF）
+        assert "c3(EDF)" in chan_names and "c3(NDF)" in chan_names, chan_names
+        assert "flow(EDF)" in chan_names and "flow(NDF)" in chan_names, chan_names
+        # EDF only 必須被補上（plain 名，無後綴）
         assert "spo2" in chan_names
         assert "newchan" in chan_names
 
-        # 確認 source
-        c3_info = rec.get_channel_info("c3")
+        # 確認 source：c3 兩變體分別路由 ndf / edf
+        c3_ndf = rec.get_channel_info("c3(NDF)")
+        c3_edf = rec.get_channel_info("c3(EDF)")
+        assert c3_ndf.get("source") in (None, "ndf")  # ndf 預設沒設或 ndf
+        assert c3_edf.get("source") == "edf"
         spo2_info = rec.get_channel_info("spo2")
-        assert c3_info.get("source") in (None, "ndf")  # ndf 預設沒設或 ndf
         assert spo2_info.get("source") == "edf"
         assert spo2_info.get("edf_signal_index") is not None
 
-        # get_data for ndf channel
-        d_c3, fs_c3 = rec.get_data("c3", 0, 1.0)
+        # get_data：NDF 變體與 EDF 變體都應正確讀取
+        d_c3, fs_c3 = rec.get_data("c3(NDF)", 0, 1.0)
         assert len(d_c3) == int(fs_c3)  # ~200
         assert fs_c3 == 200.0
+        d_c3e, fs_c3e = rec.get_data("c3(EDF)", 0, 1.0)
+        assert fs_c3e == 200.0
 
         # get_data for edf-only
         d_spo2, fs_spo2 = rec.get_data("spo2", 0, 1.0)
@@ -385,8 +389,9 @@ def test_viewer_with_merged_edf_channels_offscreen():
                     nm = cb.property("channel_name")
                     if nm:
                         all_ch_names.append(nm)
-        print("Viewer channel list sample:", all_ch_names[:5])
-        assert "c3" in all_ch_names
+        print("Viewer channel list sample:", all_ch_names[:6])
+        # c3 同時在 NDF 與 EDF → 並列兩變體；spo2 為 EDF-only（plain）
+        assert "c3(EDF)" in all_ch_names and "c3(NDF)" in all_ch_names, all_ch_names
         assert "spo2" in all_ch_names
 
         # 僅檢查載入後的通道列表（update_view 在此測試 setup 下可能觸發 overview 遞迴，屬 UI 初始化邊緣，不影響核心合併邏輯）

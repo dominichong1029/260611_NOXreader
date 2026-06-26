@@ -15,6 +15,7 @@ PSG Viewer
 
 import sys
 import os
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 import numpy as np
@@ -33,7 +34,7 @@ from PyQt6.QtCore import (
     Qt, QTimer, pyqtSignal, QSettings, QSize, QEvent, QRect,
     QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
 )
-from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QColor, QGuiApplication, QCursor
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QColor, QGuiApplication, QCursor, QValidator
 
 import pyqtgraph as pg
 
@@ -73,12 +74,101 @@ def _normalize_channel_key(name: str) -> str:
     return name.lower().replace(" ", "")
 
 
+_CHANNEL_VARIANT_RE = re.compile(r"^(.*)\((EDF|NDF)\)$", re.IGNORECASE)
+
+
+def split_channel_variant(name: str) -> tuple[str, str | None]:
+    """把重疊通道的顯示名拆成 (base, 'EDF'|'NDF')；非重疊通道回 (name, None)。
+    重疊通道顯示名格式為 f'{base}(EDF)' / f'{base}(NDF)'（recording 端產生）。"""
+    if not name:
+        return name, None
+    m = _CHANNEL_VARIANT_RE.match(name)
+    if m:
+        return m.group(1).rstrip(), m.group(2).upper()
+    return name, None
+
+
+def strip_channel_variant(name: str) -> str:
+    """去掉 (EDF)/(NDF) 後綴，回傳底層通道名（供事件比對；非重疊通道原樣回傳）。"""
+    return split_channel_variant(name)[0]
+
+
 def channel_matches_preset(channel_name: str, preset_names: list[str]) -> bool:
-    """比對實際通道名與預設列表（忽略大小寫與空白）。"""
-    if channel_name in preset_names:
+    """比對實際通道名與預設列表（忽略大小寫與空白）。
+    重疊通道：去 (EDF)/(NDF) 後綴後比對 base；且**只有 EDF 變體**預設匹配（預設優先勾 EDF），
+    NDF 變體預設不勾（使用者可手動勾選並列）。"""
+    base, variant = split_channel_variant(channel_name)
+    if variant == "NDF":
+        return False
+    if base in preset_names:
         return True
-    norm = _normalize_channel_key(channel_name)
+    norm = _normalize_channel_key(base)
     return norm in {_normalize_channel_key(p) for p in preset_names}
+
+
+def _fmt_signed_hms_ms(sec: float) -> str:
+    """秒數 → ±hh:mm:ss.mmm。"""
+    sign = "-" if sec < 0 else "+"
+    a = abs(float(sec))
+    ms = int(round((a - int(a)) * 1000))
+    a_i = int(a)
+    if ms >= 1000:  # 進位防呆
+        a_i += 1
+        ms -= 1000
+    h = a_i // 3600
+    m = (a_i % 3600) // 60
+    s = a_i % 60
+    return f"{sign}{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
+def _parse_signed_hms_ms(text: str):
+    """±hh:mm:ss.mmm（或較寬鬆 hh:mm:ss / mm:ss）→ 秒數；無效回 None。"""
+    if text is None:
+        return None
+    t = str(text).strip()
+    if not t:
+        return None
+    sign = 1.0
+    if t[0] in "+-":
+        sign = -1.0 if t[0] == "-" else 1.0
+        t = t[1:].strip()
+    parts = t.split(":")
+    try:
+        if len(parts) == 3:
+            h, m, s = int(parts[0]), int(parts[1]), float(parts[2])
+        elif len(parts) == 2:
+            h, m, s = 0, int(parts[0]), float(parts[1])
+        elif len(parts) == 1:
+            h, m, s = 0, 0, float(parts[0])
+        else:
+            return None
+    except (ValueError, TypeError):
+        return None
+    return sign * (h * 3600 + m * 60 + s)
+
+
+class _OffsetSpinBox(QDoubleSpinBox):
+    """以『±hh:mm:ss.mmm』顯示/編輯的秒數微調框（含上下箭頭、可正負）。
+    value() 單位為秒。keyboardTracking=False → 只在編輯完成(離開焦點/Enter)或點箭頭時 emit valueChanged。"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setRange(-86400.0, 86400.0)
+        self.setDecimals(3)
+        self.setSingleStep(0.05)  # 50ms 微調
+        self.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.setMinimumWidth(150)
+        self.setKeyboardTracking(False)
+
+    def textFromValue(self, v):
+        return _fmt_signed_hms_ms(v)
+
+    def valueFromText(self, text):
+        val = _parse_signed_hms_ms(text)
+        return val if val is not None else self.value()
+
+    def validate(self, text, pos):
+        # 寬鬆驗證：允許編輯中的時分秒文字（預設數字驗證器會擋掉冒號）
+        return (QValidator.State.Acceptable, text, pos)
 
 
 class _EventChannelTable(QTableWidget):
@@ -528,6 +618,10 @@ class PSGViewer(QMainWindow):
         self.x_axis_show_milliseconds: bool = False  # 預設不顯示毫秒
         self.x_axis_absolute_time: bool = True  # 預設顯示絕對牆鐘時間（origin + 相對秒）；關閉則顯示自 0 起的相對經過時間
         self.antialias_on: bool = True  # 抗鋸齒（檢視選單可切換，預設開）；關閉可在密集波形大幅加速繪製
+        # 工具>設定偏移量：對 EDF / NDF 來源波形的『額外』時間偏移調整（秒，疊加在自動對齊之上；可正負）
+        self.source_offset_adjust: dict = {"edf": 0.0, "ndf": 0.0}
+        # 事件標記偏移（秒，可正負）：同步位移波形上的事件標記 + 事件表的開始/結束時間（顯示層，不改原始資料）
+        self.event_offset_adjust: float = 0.0
 
         # PR2: VizSettings (memory container) + position special renderers；PR4 由 PrefsManager 持久化（per-rec）
         self._viz_settings = VizSettings()
@@ -1191,9 +1285,15 @@ class PSGViewer(QMainWindow):
         view_menu.addMenu(xaxis_menu)
         view_menu.addAction(self.act_show_ms)
 
-        # 工具：例外匹配列表、清除偏好記錄
+        # 設定偏移量（EDF/NDF 來源波形時間微調）
+        self.act_set_offset = QAction("設定偏移量", self)
+        self.act_set_offset.setToolTip("微調 EDF / NDF 來源波形的時間偏移（±時分秒毫秒），即時影響下方波形。")
+        self.act_set_offset.triggered.connect(self._show_offset_dialog)
+
+        # 工具：例外匹配列表、設定偏移量、清除偏好記錄
         tools_menu = menubar.addMenu("工具 (&T)")
         tools_menu.addAction(self.act_exception_list)
+        tools_menu.addAction(self.act_set_offset)
         tools_menu.addAction(self.act_clear_prefs)
 
     def _create_toolbar(self):
@@ -2054,9 +2154,15 @@ class PSGViewer(QMainWindow):
         if rel_e is None or rel_e < rel_s:
             rel_e = rel_s
 
+        has_end = self._event_has_meaningful_end(ev)  # 用原始 ev 判定（offset 為均勻位移，不影響）
+        # 事件標記偏移（設定偏移量對話框）：顯示層均勻位移開始/結束時間，不改原始資料。
+        eo = float(getattr(self, "event_offset_adjust", 0.0) or 0.0)
+        if eo:
+            rel_s += eo
+            rel_e += eo
+
         # 時間欄一律顯示絕對牆鐘時間；排序鍵用 rel_s（跨午夜單調），不受 X軸選單影響。
         start_str = self._abs_clock_str(rel_s, include_ms=True) if rel_s is not None else "-"
-        has_end = self._event_has_meaningful_end(ev)
         end_str = self._abs_clock_str(rel_e, include_ms=True) if has_end else "-"
         dur = rel_e - rel_s if has_end else 0
         dur_str = f"{dur:.3f} s" if has_end else "-"
@@ -2380,9 +2486,16 @@ class PSGViewer(QMainWindow):
         """
         rec = self.current_rec
         try:
-            offset = float(rec.channel_offset_sec(ch))
+            info = rec.get_channel_info(ch) or {}
+            offset = float(info.get("start_offset_sec", 0.0) or 0.0)
+            src = info.get("source") or "ndf"
         except Exception:
             offset = 0.0
+            src = "ndf"
+        # 疊加「設定偏移量」對話框的來源手動調整（EDF/NDF），供對齊微調/驗證
+        adj = getattr(self, "source_offset_adjust", None)
+        if adj:
+            offset += float(adj.get("edf" if src == "edf" else "ndf", 0.0) or 0.0)
         local_t0 = t0 - offset
         read_t0 = local_t0 if local_t0 > 0 else 0.0
         read_dur = dur - (read_t0 - local_t0)  # 視窗前緣若早於通道起始則縮短
@@ -3009,13 +3122,28 @@ class PSGViewer(QMainWindow):
 
     def _apply_saved_visible(self, saved: list[str]):
         """套用已儲存的可見通道列表到表格 checks（block signals），並重建 self.visible_channels。
-        保護：如果儲存的列表過長（先前「全選」），則退回 DeepNYX 預設通道。
+        保護：如果儲存的列表過長（先前「全選」）或為空，則退回 DeepNYX 預設通道。
         """
         if not self.channel_table:
             return
 
         if not saved or len(saved) > 15:
-            saved = CLINICAL_DEFAULT_CHANNELS
+            # 退回 DeepNYX 預設：用 preset 比對（重疊通道預設只勾 EDF 變體）
+            matcher = lambda nm: channel_matches_preset(nm, CLINICAL_DEFAULT_CHANNELS)
+        else:
+            # 精確還原使用者當時可見的『顯示名』（用精確比對，才能還原手動勾的 NDF 變體；
+            # channel_matches_preset 對 NDF 變體一律回 False，不適用於還原）。
+            # 遷移：dual-channel 改名前存的 base 名（如 "snore"）→ 對應 EDF 變體 "snore(EDF)"。
+            existing = {c["name"].lower()
+                        for c in (self.current_rec.channels if self.current_rec else [])}
+            want = set()
+            for s in saved:
+                sl = str(s).strip().lower()
+                if sl in existing:
+                    want.add(sl)
+                elif f"{sl}(edf)" in existing:  # 舊 base 名 → EDF 變體
+                    want.add(f"{sl}(edf)")
+            matcher = lambda nm: nm.strip().lower() in want
 
         self.channel_table.blockSignals(True)
         for row in range(self.channel_table.rowCount()):
@@ -3024,7 +3152,7 @@ class PSGViewer(QMainWindow):
                 chk = chk_w.findChild(QCheckBox)
                 if chk:
                     name = chk.property("channel_name") or ""
-                    chk.setChecked(channel_matches_preset(name, saved))
+                    chk.setChecked(matcher(name))
         self.channel_table.blockSignals(False)
         # 重建 visible 列表（類似 _populate 結尾邏輯）
         self.visible_channels = []
@@ -3210,14 +3338,15 @@ class PSGViewer(QMainWindow):
         ve = self.time_start + self.time_duration
         margin = self.time_duration  # 視窗外保留一個窗寬
         lo, hi = vs - margin, ve + margin
+        eo = float(getattr(self, "event_offset_adjust", 0.0) or 0.0)  # 事件標記偏移後判斷是否在視窗內
         out = []
         for ev in events:
             rs = ev.get('rel_start')
             if rs is None:
                 continue
             re_ = ev.get('rel_end')
-            end = re_ if re_ is not None else rs
-            if end >= lo and rs <= hi:
+            end = (re_ if re_ is not None else rs) + eo
+            if end >= lo and (rs + eo) <= hi:
                 out.append(ev)
         return out
 
@@ -3309,6 +3438,91 @@ class PSGViewer(QMainWindow):
             pass
         # 立即重繪：_perform_update_view 的 setData 會帶入 antialias=self.antialias_on
         self._update_view(immediate=True)
+
+    def _show_offset_dialog(self):
+        """工具>設定偏移量：非模態小彈窗，微調 EDF/NDF 來源波形時間偏移（±hh:mm:ss.mmm）。
+        離開焦點或點上下箭頭即時套用到下方波形（事件標記位置不變，方便核對對齊）。
+        """
+        if not self.current_rec:
+            QMessageBox.information(self, "設定偏移量", "請先載入錄音。")
+            return
+        # 顯示用：EDF 來源實際的自動校時量。
+        # = 併入時間原點的次秒（origin 的毫秒部分；Data.ndb RecordingStart 還原而來）
+        #   + EDF 通道本身的 offset（無 Data.ndb 時走互相關備援，校時落在通道 offset）。
+        # 兩種路徑都得到同一個「EDF 相對其自報整秒 header 的真實位移」。
+        edf_auto = None
+        try:
+            has_edf = any(c.get("source") == "edf" for c in self.current_rec.channels)
+            if has_edf:
+                origin = self.current_rec.start_datetime
+                sub = (origin.microsecond / 1e6) if origin is not None else 0.0
+                edf_ch_off = 0.0
+                for c in self.current_rec.channels:
+                    if c.get("source") == "edf":
+                        edf_ch_off = float(self.current_rec.channel_offset_sec(c["name"]))
+                        break
+                edf_auto = sub + edf_ch_off
+        except Exception:
+            edf_auto = None
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("設定偏移量")
+        lay = QVBoxLayout(dlg)
+        desc = QLabel("額外微調各來源標記的時間偏移。")
+        desc.setWordWrap(True)
+        lay.addWidget(desc)
+        if edf_auto is not None:
+            lay.addWidget(QLabel(f"（EDF已自動校時 {_fmt_signed_hms_ms(edf_auto)}）"))
+
+        form = QFormLayout()
+        edf_spin = _OffsetSpinBox()
+        edf_spin.setValue(float(self.source_offset_adjust.get("edf", 0.0)))
+        ndf_spin = _OffsetSpinBox()
+        ndf_spin.setValue(float(self.source_offset_adjust.get("ndf", 0.0)))
+        evt_spin = _OffsetSpinBox()
+        evt_spin.setValue(float(getattr(self, "event_offset_adjust", 0.0)))
+        form.addRow("EDF 偏移調整：", edf_spin)
+        form.addRow("NDF 偏移調整：", ndf_spin)
+        form.addRow("事件標記偏移：", evt_spin)
+        lay.addLayout(form)
+
+        def apply_edf(v):
+            self.source_offset_adjust["edf"] = float(v)
+            self._update_view(immediate=True)
+
+        def apply_ndf(v):
+            self.source_offset_adjust["ndf"] = float(v)
+            self._update_view(immediate=True)
+
+        def apply_evt(v):
+            self.event_offset_adjust = float(v)
+            # 同步更新事件表（開始/結束時間欄）與波形上的事件標記
+            self._populate_events_table()
+            self._update_view(immediate=True)
+
+        edf_spin.valueChanged.connect(apply_edf)
+        ndf_spin.valueChanged.connect(apply_ndf)
+        evt_spin.valueChanged.connect(apply_evt)
+
+        btns = QHBoxLayout()
+        btn_reset = QPushButton("重設歸零")
+
+        def do_reset():
+            edf_spin.setValue(0.0)
+            ndf_spin.setValue(0.0)
+            evt_spin.setValue(0.0)
+
+        btn_reset.clicked.connect(do_reset)
+        btn_close = QPushButton("關閉")
+        btn_close.clicked.connect(dlg.accept)
+        btns.addWidget(btn_reset)
+        btns.addStretch()
+        btns.addWidget(btn_close)
+        lay.addLayout(btns)
+
+        dlg.setModal(False)  # 非模態：邊調邊看下方波形即時變化
+        self._offset_dialog = dlg  # 保留參考避免被 GC
+        dlg.show()
 
     def _on_toggle_event_text_labels(self, checked):
         """切換事件 marker 上的小文字標籤顯示（type @ location）。
@@ -4168,6 +4382,7 @@ class PSGViewer(QMainWindow):
             self.chk_display_all_channels.isChecked()
         )
         merge_gap = self._marker_merge_gap()
+        eo = float(getattr(self, "event_offset_adjust", 0.0) or 0.0)  # 事件標記偏移（顯示層）
         # 預先算每事件的蒙層區段（含 duration 正規化），不隨通道改變，避免 per-channel 重算。
         prepared = []
         for ev in to_overlay:
@@ -4182,6 +4397,9 @@ class PSGViewer(QMainWindow):
                 re = rs + 1.0
             rs = max(0.0, min(rs, self.max_duration))
             re = max(rs + 0.05, min(re, self.max_duration))
+            if eo:  # 事件標記偏移（與表格/標記一致位移）
+                rs += eo
+                re += eo
             prepared.append((ev, rs, re, self._is_unmatched_event(ev)))
 
         brush = pg.mkBrush(255, 255, 140, 38)
@@ -4397,9 +4615,12 @@ class PSGViewer(QMainWindow):
     # ==================== issue1: event by-channel 顯示在波形圖 ====================
 
     def _event_matches_channel(self, ev: dict, ch_name: str) -> bool:
-        """判斷 event 的 location/type 是否對應此通道。"""
+        """判斷 event 的 location/type 是否對應此通道。
+        重疊通道（snore(EDF)/snore(NDF)）先去後綴用 base 比對 → 事件同時對應兩個變體，
+        勾哪個變體波形就在哪畫標記（兩個都勾就兩邊都畫）。"""
         if not ev or not ch_name:
             return False
+        ch_name = strip_channel_variant(ch_name)
 
         try:
             pairs = self._get_exception_map()
@@ -4459,7 +4680,9 @@ class PSGViewer(QMainWindow):
             if ev_id:
                 for k, v in self._get_exception_map():
                     if k.lower() == ev_id:
-                        if any(ch.strip().lower() == v.strip().lower() for ch in raw_chans):
+                        # 去 (EDF)/(NDF) 後綴後比對 base：例外目標 "snore" 要能對上 snore(EDF)/snore(NDF)
+                        if any(strip_channel_variant(ch).strip().lower() == v.strip().lower()
+                               for ch in raw_chans):
                             valid_exc = v
                             break
             if matched_ch and not valid_exc:
@@ -4646,15 +4869,17 @@ class PSGViewer(QMainWindow):
         # 像素級合併門檻（秒）：約 1px 對應的視窗秒數。縮放遠時門檻變大 → 密集標記合併，
         # 把原本上萬個重疊的 InfiniteLine/region 壓成數十個物件（視覺無損，放大自動還原細節）。
         merge_gap = self._marker_merge_gap()
+        eo = float(getattr(self, "event_offset_adjust", 0.0) or 0.0)  # 事件標記偏移（顯示層）
         # 預先算每事件的共用屬性（不隨通道改變），避免在 plot 迴圈內重複計算。
         prepared = []
         for ev in to_mark:
             rs = ev.get("rel_start", -1)
             if rs < 0 or rs > self.max_duration:
                 continue
+            rs += eo  # 事件標記偏移
             is_unm = self._is_unmatched_event(ev)
             has_end = self._event_has_meaningful_end(ev)
-            re_clip = min(float(ev.get("rel_end")), self.max_duration) if has_end else None
+            re_clip = min(float(ev.get("rel_end")) + eo, self.max_duration) if has_end else None
             prepared.append((ev, rs, is_unm, has_end, re_clip))
 
         for i, p in enumerate(self.plot_items):

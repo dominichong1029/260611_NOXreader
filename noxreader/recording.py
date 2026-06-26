@@ -712,6 +712,139 @@ class NoxRecording:
         # 快取已開啟的 memmap（key = 正規化名稱）
         self._mmap_cache: Dict[str, np.memmap] = {}
 
+        # EDF 來源絕對時間校準：
+        # 優先已用 Data.ndb 的精確 RecordingStart 當 origin（次秒精確、EDF offset=0 即正確），無需再校準。
+        # 僅當沒有 Data.ndb（origin 退回 EDF 整秒 header）時，才以 NDF 互相關估計 EDF 偏移作為備援。
+        if not getattr(self, "_origin_from_ndb", False):
+            try:
+                self._calibrate_edf_offset()
+            except Exception as ex:
+                print(f"[EDF-cal] 互相關校準失敗（不影響載入）: {ex}")
+
+    def _calibrate_edf_offset(self) -> None:
+        """以 NDF 校準 EDF 來源通道的全域 offset（修正 EDF header 次秒遺失造成的整體偏移）。
+        作法：找一個強訊號的 EDF/NDF 重疊通道，互相關量出 EDF↔NDF 偏移，
+        套用到所有 EDF 來源 entry 的 start_offset_sec。無重疊（純 EDF）則不動。
+        """
+        # 收集同時有 EDF 與 NDF 變體的 base（dup pairs）
+        edf_by_base: Dict[str, Dict] = {}
+        ndf_by_base: Dict[str, Dict] = {}
+        for k, e in self.ch_index.items():
+            base = e.get("base_name")
+            if not base:
+                continue
+            bl = base.lower()
+            if e.get("source") == "edf":
+                edf_by_base.setdefault(bl, e)
+            else:
+                ndf_by_base.setdefault(bl, e)
+        common = [b for b in edf_by_base if b in ndf_by_base]
+        if not common:
+            return  # 無重疊通道，無法校準（純 EDF 錄音維持原樣）
+
+        # 選校準通道：偏好連續訊號（呼吸/EEG/氣流），其次高 fs（互相關較穩）
+        pref = ("flow", "c3", "c4", "nasal", "thermistor", "rip", "abdomen",
+                "thorax", "ecg", "pleth")
+
+        def score(b):
+            for i, kw in enumerate(pref):
+                if kw in b:
+                    return (1000 - i, float(edf_by_base[b].get("fs", 0) or 0))
+            return (0, float(edf_by_base[b].get("fs", 0) or 0))
+
+        common.sort(key=score, reverse=True)
+
+        lag = None
+        chosen = None
+        for b in common[:5]:
+            lag = self._measure_edf_ndf_lag(edf_by_base[b], ndf_by_base[b])
+            if lag is not None:
+                chosen = b
+                break
+        if lag is None:
+            print("[EDF-cal] 無法量測 EDF↔NDF 偏移（訊號不足/相關過低），維持 offset=0")
+            return
+
+        edf_off = -lag  # lag = EDF 相對 NDF；EDF 偏早(lag<0) → 需 +offset 往後移
+        applied = 0
+        for k, e in self.ch_index.items():
+            if e.get("source") == "edf":
+                e["start_offset_sec"] = edf_off
+                applied += 1
+        # 重算概觀右界（offset 變動後）
+        span = 0.0
+        seen_id = set()
+        for e in self.ch_index.values():
+            if id(e) in seen_id:
+                continue
+            seen_id.add(id(e))
+            dur = float(e.get("duration_sec", 0.0) or 0.0)
+            off = float(e.get("start_offset_sec", 0.0) or 0.0)
+            if dur > 0:
+                span = max(span, off + dur)
+        if span > 0:
+            self.total_span_sec = span
+        print(f"[EDF-cal] 以「{chosen}」校準：EDF 來源 offset = {edf_off:+.3f}s "
+              f"（lag={lag:+.3f}s, 套用 {applied} keys）")
+
+    def _measure_edf_ndf_lag(self, edf_e: Dict, ndf_e: Dict) -> Optional[float]:
+        """互相關量 EDF vs NDF 在全域時間的偏移（秒）。lag<0 表示 EDF 被擺早。
+        於兩者都覆蓋的中段取 ~200s 窗，包絡降到 50Hz 共同格做互相關；相關過低回 None。"""
+        fs_e = float(edf_e.get("inferred_fs") or edf_e.get("fs") or 0)
+        fs_n = float(ndf_e.get("inferred_fs") or ndf_e.get("fs") or 0)
+        if fs_e <= 0 or fs_n <= 0:
+            return None
+        off_e = float(edf_e.get("start_offset_sec", 0.0) or 0.0)
+        off_n = float(ndf_e.get("start_offset_sec", 0.0) or 0.0)
+        dur_e = float(edf_e.get("duration_sec", 0) or 0)
+        dur_n = float(ndf_e.get("duration_sec", 0) or 0)
+        g_lo = max(off_e, off_n) + 100.0
+        g_hi = min(off_e + dur_e, off_n + dur_n) - 100.0
+        if g_hi - g_lo < 80.0:
+            return None
+        g0 = g_lo + (g_hi - g_lo) * 0.4
+        span = min(200.0, g_hi - g0)
+        if span < 60.0:
+            return None
+        try:
+            de, _ = self.get_data(edf_e["display_name"], start_sec=g0 - off_e,
+                                  duration=span, as_float=True)
+            dn, _ = self.get_data(ndf_e["display_name"], start_sec=g0 - off_n,
+                                  duration=span, as_float=True)
+        except Exception:
+            return None
+        if len(de) < 100 or len(dn) < 100:
+            return None
+        grid_fs = 50.0
+        grid_t = np.arange(0.0, span, 1.0 / grid_fs)
+
+        def envel(d, fs):
+            d = np.abs(np.asarray(d, dtype=np.float64) - np.median(d))
+            win = max(1, int(round(fs / grid_fs)))
+            sm = np.convolve(d, np.ones(win) / win, mode="same")
+            t = np.arange(len(d)) / fs
+            return np.interp(grid_t, t, sm)
+
+        ee = envel(de, fs_e)
+        en = envel(dn, fs_n)
+        m = min(len(ee), len(en))
+        ee = ee[:m] - ee[:m].mean()
+        en = en[:m] - en[:m].mean()
+        if np.sum(ee ** 2) <= 0 or np.sum(en ** 2) <= 0:
+            return None
+        corr = np.correlate(ee, en, mode="full")
+        lags = (np.arange(corr.size) - (m - 1)) / grid_fs
+        mask = np.abs(lags) <= 5.0  # 合理偏移上限
+        if not np.any(mask):
+            return None
+        sub = corr[mask]
+        ci = int(np.argmax(sub))
+        best_lag = float(lags[mask][ci])
+        denom = (np.sqrt(np.sum(ee ** 2)) * np.sqrt(np.sum(en ** 2))) or 1.0
+        if float(sub[ci] / denom) < 0.6:
+            return None
+        return best_lag
+
     def _edf_start_datetime(self) -> Optional[datetime]:
         """取得 companion EDF 的起始時間（Nox 專有 parser 或標準 pyedflib），作為全域原點首選。"""
         if not self.edf_path:
@@ -724,6 +857,37 @@ class NoxRecording:
         try:
             return parse_nox_edf(self.edf_path).start_datetime
         except Exception:
+            return None
+
+    def _read_ndb_recording_start(self) -> Optional[datetime]:
+        """從 raw_dir/Data.ndb 讀取權威錄音起始時間（含次秒）。
+        Nox Noxturnal 把精確起始存在 internal_property 的 RecordingInfo/RecordingStart，
+        型別 'Ticks' = .NET DateTime ticks（100ns since 0001-01-01）。
+        EDF header 的 starttime 只存整秒、會捨去次秒（實測 D18 = 0.744s）；此值才是精確原點。
+        無 Data.ndb 或讀取失敗回 None。"""
+        try:
+            raw = getattr(self, "raw_dir", None)
+            if not raw:
+                return None
+            ndb = Path(raw) / "Data.ndb"
+            if not ndb.exists():
+                return None
+            conn = sqlite3.connect(f"file:{ndb}?mode=ro&immutable=1", uri=True)
+            try:
+                row = conn.execute(
+                    "SELECT value FROM internal_property "
+                    "WHERE name='RecordingInfo' AND key='RecordingStart' AND type='Ticks' LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+            if not row or row[0] in (None, ""):
+                return None
+            ticks = int(row[0])
+            dt = datetime(1, 1, 1) + timedelta(microseconds=ticks / 10)
+            print(f"[NDB] RecordingStart（權威精確起始）= {dt}（次秒 {ticks % 10_000_000 / 1e7:.3f}s）")
+            return dt
+        except Exception as e:
+            print(f"[NDB] 讀取 RecordingStart 失敗（改用 EDF/NDF 推估）: {e}")
             return None
 
     def _compute_time_origin_and_offsets(self) -> None:
@@ -748,10 +912,28 @@ class NoxRecording:
                 ndf_starts.append(sd)
 
         edf_start = self._edf_start_datetime()
+        ndb_start = self._read_ndb_recording_start()  # 權威精確起始（含次秒）
 
-        # 決定原點：EDF 起始優先；否則最早 NDF；都沒有則維持舊 start_datetime（folder 推測）並全部 offset=0
+        # 決定原點：
+        # 1) Data.ndb 的 RecordingStart（.NET ticks，含次秒，最權威）。這是整個錄音 session 的 t=0，
+        #    NDF/EDF/評分標記同屬此 session 共用之。EDF header 只存整秒會遺失次秒（D18 實測 floor 比
+        #    真實起始早 0.744s，正是 EDF 波形偏移來源）。
+        #    **安全核對**：有 companion EDF 時，floor(RecordingStart) 必須等於 EDF header 起始（證明
+        #    Data.ndb 與此 EDF 為同一次錄音/匯出），不符則不採信精確值、退回 EDF header。
+        # 2) 否則 EDF header 起始（整秒）；3) 否則最早 NDF；都沒有則維持舊 start_datetime 全 offset=0。
+        self._origin_from_ndb = False
+        ndb_ok = ndb_start is not None and (
+            edf_start is None
+            or abs((ndb_start.replace(microsecond=0) - edf_start).total_seconds()) <= 1.0
+        )
+        if ndb_start is not None and not ndb_ok:
+            print(f"[NDB] RecordingStart({ndb_start}) 與 EDF header({edf_start}) 不一致，"
+                  f"不採用精確值（疑非同次匯出）")
         origin: Optional[datetime] = None
-        if edf_start is not None:
+        if ndb_ok:
+            origin = ndb_start
+            self._origin_from_ndb = True
+        elif edf_start is not None:
             origin = edf_start
             if ndf_starts:
                 # 防呆：若某 NDF 早於 EDF start（實測未見，但保險），原點取更早者以免出現負 offset
@@ -969,13 +1151,18 @@ class NoxRecording:
             self.edf_path = None
             return
 
+        # 既有 NDF 通道：建立 正規化名 → 唯一 NDF entry 對照（用於重疊偵測 + 重貼標）。
         existing_norms = set()
-        for k, e in self.ch_index.items():
+        ndf_by_norm: Dict[str, Dict] = {}
+        for k, e in list(self.ch_index.items()):
             stem = e.get("stem", k)
             existing_norms.add(_normalize(stem))
             existing_norms.add(_normalize(k))
+            if e.get("source") != "edf":
+                ndf_by_norm.setdefault(_normalize(stem), e)
 
-        added = 0
+        added = 0          # EDF-only 新增數
+        dup = 0            # 與 NDF 重疊、改為並列(EDF/NDF 後綴)的數量
         added_labels = []
 
         if self._edf_uses_pyedflib:
@@ -984,22 +1171,24 @@ class NoxRecording:
 
                 f = pyedflib.EdfReader(str(self.edf_path))
                 n_sig = f.signals_in_file
+                nsamp_all = f.getNSamples()
                 for i in range(n_sig):
                     label = (f.getLabel(i) or "").strip()
                     if not label:
-                        continue
-                    lnorm = _normalize(label)
-                    if lnorm in existing_norms:
                         continue
                     fs = float(f.getSampleFrequency(i) or 0)
                     if fs <= 0:
                         continue
                     unit = (f.getPhysicalDimension(i) or "").strip()
-                    ns = int(f.getNSamples()[i]) if i < len(f.getNSamples()) else 0
+                    ns = int(nsamp_all[i]) if i < len(nsamp_all) else 0
                     entry = self._make_edf_channel_entry(label, fs, unit, ns, i)
-                    self._register_edf_channel(entry, existing_norms)
-                    added += 1
-                    added_labels.append(f"{label}(fs={fs:.2f})")
+                    kind = self._merge_one_edf_signal(entry, existing_norms, ndf_by_norm)
+                    if kind == "dup":
+                        dup += 1
+                    elif kind == "added":
+                        added += 1
+                    if kind:
+                        added_labels.append(f"{label}(fs={fs:.2f})")
                 f.close()
             except Exception as e:
                 print(f"[EDF] pyedflib merge failed: {e}")
@@ -1010,9 +1199,6 @@ class NoxRecording:
             for i, label in enumerate(hdr.labels):
                 if not label:
                     continue
-                lnorm = _normalize(label)
-                if lnorm in existing_norms:
-                    continue
                 fs = hdr.fs_for_channel(i)
                 if fs <= 0:
                     continue
@@ -1020,15 +1206,52 @@ class NoxRecording:
                 ns = hdr.total_samples_for_channel(i)
                 entry = self._make_edf_channel_entry(label, fs, unit, ns, i)
                 entry["nox_edf"] = True
-                self._register_edf_channel(entry, existing_norms)
-                added += 1
-                added_labels.append(f"{label}(fs={fs:.2f})")
+                kind = self._merge_one_edf_signal(entry, existing_norms, ndf_by_norm)
+                if kind == "dup":
+                    dup += 1
+                elif kind == "added":
+                    added += 1
+                if kind:
+                    added_labels.append(f"{label}(fs={fs:.2f})")
 
-        if added > 0:
+        if added or dup:
             self.duration_sec = compute_overall_duration(self.ch_index) or self.duration_sec
-            print(f"[EDF] Added {added} EDF-only channels: {added_labels}. duration={self.duration_sec:.1f}s")
+            print(f"[EDF] Merged: EDF-only={added}, 與NDF重疊並列(EDF/NDF)={dup}. "
+                  f"duration={self.duration_sec:.1f}s")
         else:
-            print("[EDF] No new EDF-only channels added (all overlapped with NDF or invalid)")
+            print("[EDF] No EDF channels merged (all invalid)")
+
+    def _merge_one_edf_signal(self, entry: Dict, existing_norms: set,
+                              ndf_by_norm: Dict[str, Dict]) -> Optional[str]:
+        """處理單一 EDF signal entry：
+        - 與 NDF 同名(正規化)重疊 → 兩者都保留並加 (EDF)/(NDF) 後綴顯示名；回傳 'dup'。
+        - 否則 EDF-only → 照常註冊（plain 名）；回傳 'added'。
+        """
+        label = entry["stem"]
+        lnorm = _normalize(label)
+        nd = ndf_by_norm.get(lnorm)
+        if nd is not None:
+            # 重疊：兩個變體共用 NDF stem 當 base（與事件名/歷史比對一致，避免 EDF 標籤大小寫差異
+            # 讓嚴格事件比對失配）。EDF 變體仍 source=edf、路由 EDF 資料。
+            nd_stem = nd.get("stem", label)
+            disp_edf = f"{nd_stem}(EDF)"
+            entry["display_name"] = disp_edf
+            entry["base_name"] = nd_stem
+            self.ch_index[disp_edf] = entry
+            self.ch_index[_normalize(disp_edf)] = entry
+            # 對應 NDF 變體重貼標為 (NDF)（只做一次）
+            if not nd.get("display_name"):
+                disp_ndf = f"{nd_stem}(NDF)"
+                nd["display_name"] = disp_ndf
+                nd["base_name"] = nd_stem
+                self.ch_index[disp_ndf] = nd
+                self.ch_index[_normalize(disp_ndf)] = nd
+            return "dup"
+        # EDF-only
+        if lnorm in existing_norms:
+            return None  # 與既有 EDF entry 重複（罕見），略過
+        self._register_edf_channel(entry, existing_norms)
+        return "added"
 
     def _make_edf_channel_entry(
         self, label: str, fs: float, unit: str, samples: int, sig_index: int
@@ -1301,13 +1524,16 @@ class NoxRecording:
         seen = set()
         out = []
         for k, e in self.ch_index.items():
-            stem = e["stem"]
-            if stem in seen:
+            # 以「顯示名」去重（重疊通道的 NDF/EDF 變體各有唯一後綴名；非重疊則 = stem）。
+            disp = e.get("display_name") or e["stem"]
+            if disp in seen:
                 continue
-            seen.add(stem)
+            seen.add(disp)
             out.append(
                 {
-                    "name": stem,
+                    "name": disp,
+                    "base_name": e.get("base_name") or e["stem"],
+                    "source": e.get("source", "ndf"),
                     "fs": e["fs"],
                     "unit": e["unit"],
                     "desc": e["desc"],
