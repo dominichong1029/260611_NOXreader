@@ -4,7 +4,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ================================================
-echo   NoxPSG Viewer - One Click Launcher (start.bat)
+echo   PSG Viewer - One Click Launcher (start.bat)
 echo ================================================
 echo Current folder: %CD%
 echo.
@@ -37,20 +37,18 @@ echo [INFO] Python found.
 echo [INFO] Ensuring required packages are installed...
 python -m pip install -r requirements.txt --disable-pip-version-check -q
 if errorlevel 1 (
-    echo [WARN] requirements.txt had issues. Trying core packages explicitly...
-    python -m pip install PyQt6 pyqtgraph numpy pyedflib python-docx openpyxl --disable-pip-version-check -q
+    echo [WARN] requirements.txt had issues. Trying core packages explicitly (showing output)...
+    python -m pip install PyQt6 pyqtgraph numpy pyedflib python-docx openpyxl xlrd==1.2.0 --disable-pip-version-check
 )
 
 :: ============================================
-:: 3. 優先啟動已打包的獨立版本（最穩定）
+:: 3. 優先啟動已打包的獨立版本（發佈版）
 :: ============================================
-if exist "dist\NoxPSGViewer\NoxPSGViewer.exe" (
-    echo [NOTE] Old packaged .exe found.
-    echo For the latest fixes (scrollbar, fixed overview separation, no crash on open, etc.),
-    echo we are FORCING run from source code instead of the stale exe.
-    echo If you want to test the old exe, temporarily rename the dist folder.
-    echo.
-    timeout /t 1 >nul
+if exist "dist\PSGviewer\PSGviewer.exe" (
+    echo [INFO] Launching packaged PSGviewer.exe ...
+    start "" "dist\PSGviewer\PSGviewer.exe"
+    endlocal
+    exit /b 0
 )
 
 :: ============================================
@@ -59,12 +57,26 @@ if exist "dist\NoxPSGViewer\NoxPSGViewer.exe" (
 echo [INFO] No pre-built exe. Starting from source...
 echo.
 
-python -c "import noxpsg_viewer; print('[CHECK] Viewer module imports cleanly')" 2>&1
+echo [INFO] Python version:
+python --version
+echo [INFO] Core packages installed:
+python -m pip list 2>&1 | findstr /I "PyQt6 pyqtgraph numpy pyedflib python-docx openpyxl"
+echo [INFO] Current working dir: %CD%
+echo.
+
+set PYTHONIOENCODING=utf-8
+set PYTHONUNBUFFERED=1
+
+python -c "import psg_viewer; print('[CHECK] Viewer module imports cleanly')" 2>&1
 if errorlevel 1 (
     echo [WARN] Basic import check failed. Will still try full launch...
 )
 
-python noxpsg_viewer.py
+python -u psg_viewer.py
+
+echo.
+echo The viewer has exited (or crashed). Press any key to close this console...
+pause >nul
 
 set LAUNCH_ERR=%ERRORLEVEL%
 if %LAUNCH_ERR% neq 0 (
@@ -77,7 +89,7 @@ if %LAUNCH_ERR% neq 0 (
     echo.
     echo You can try these manual commands for more details:
     echo   python -m pip install -r requirements.txt
-    echo   python noxpsg_viewer.py
+    echo   python psg_viewer.py
     echo.
     pause
 )

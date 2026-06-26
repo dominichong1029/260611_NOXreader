@@ -1,0 +1,498 @@
+C:\Users\dominic.hong\AppData\Local\Programs\Python\Python312\Lib\site-packages\openpyxl\styles\stylesheet.py:237: UserWarning: Workbook contains no default style, apply openpyxl's default
+  warn("Workbook contains no default style, apply openpyxl's default")
+========================================================================
+D01–D20 前後端相容性驗證（input/ 內實際存在的病患）
+========================================================================
+缺少資料夾（略過）: D04, D05, D06, D07, D08, D09, D10, D11, D12, D13, D14, D15, D16, D17, D19
+
+[NoxEdfRecording] Using standard pyedflib reader: standard EDF, n_signals=92
+[NoxEdfRecording] Init D01_00431266_PSG edf_20260413: channels=92, dur~24470.0s, nox_format=False
+[NoxStudy] D01_00431266_PSG_20260413: NDF 不可用，改以 EDF 載入 (D01_00431266_PSG edf_20260413.edf)
+[XLS] openpyxl 無法讀取 D01_00431266_PSG event_20260413.xlsx (Unable to read workbook: could not read worksheets from C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D01_00431266_PSG_20260413\D01_00431266_PSG event_20260413.xlsx.
+This is most probably because the workbook source files contain some invalid XML.
+Please see the exception for more details.)，改以 XML 解析
+[XLS] 已解析 257 筆事件：D01_00431266_PSG event_20260413.xlsx
+[PASS] D01  D01_00431266_PSG_20260413
+       類型=NoxEdfRecording  時長=24470s (06:47:50)
+       通道=67  get_events=257  UI群組=18
+       事件Top3: Normal (無匹配):168, LM (無匹配):37, K:20
+
+[NoxRecording] Init D02_16238392_PSG_20260413: NDF channels=96, raw_dur~24390.0s
+[EDF] _find_companion_edf: patient_dir=C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D02_16238392_PSG_20260413
+[EDF] raw_dir=C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D02_16238392_PSG_20260413\D02_16238392_PSG raw data_2026413\20260413T220639 - 21f84
+[EDF] 將在以下位置搜尋 *.edf（同級 raw data 也會被涵蓋）： ['C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D02_16238392_PSG_20260413', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D02_16238392_PSG_20260413\\D02_16238392_PSG raw data_2026413', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D02_16238392_PSG_20260413\\D02_16238392_PSG raw data_2026413\\20260413T220639 - 21f84', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input']
+[EDF] 在以上位置共找到 1 個 .edf 候選: ['C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D02_16238392_PSG_20260413\\D02_16238392_PSG edf_20260413.edf']
+[EDF] Chosen companion EDF: C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D02_16238392_PSG_20260413\D02_16238392_PSG edf_20260413.edf
+[EDF] Companion found, will attempt merge (NDF priority for overlaps)
+[EDF] Starting _merge_edf_only_channels for C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D02_16238392_PSG_20260413\D02_16238392_PSG edf_20260413.edf
+[EDF] pyedflib cannot open (C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D02_16238392_PSG_20260413\D02_16238392_PSG edf_20260413.edf: the file is not EDF(+) or BDF(+) compliant (Physical Maximum)); using Nox proprietary EDF parser
+[EDF] Nox parser OK: n_signals=94, n_records=2395, duration=23950.0s
+[EDF] Added 65 EDF-only channels: ['1(fs=200.00)', '1-2(fs=200.00)', '1-2 (Imp)(fs=1.00)', '1-F(fs=200.00)', '2(fs=200.00)', '2-F(fs=200.00)', 'Abdomen CaL(fs=25.00)', 'Abdomen Fast(fs=200.00)', 'Abdomen(fs=25.00)', 'Ambient Light C1(fs=250.00)', 'Audio Volume(fs=100.00)', 'C3(fs=200.00)', 'C3-M2(fs=200.00)', 'C3-M2 (Imp)(fs=1.00)', 'C4(fs=200.00)', 'C4-M1(fs=200.00)', 'C4-M1 (Imp)(fs=1.00)', 'cRIP Flow(fs=25.00)', 'cRIP Sum(fs=25.00)', 'E1(fs=200.00)', 'E1-M2(fs=200.00)', 'E1-M2 (Imp)(fs=1.00)', 'E2(fs=200.00)', 'E2-M1(fs=200.00)', 'E2-M1 (Imp)(fs=1.00)', 'ECG(fs=200.00)', 'F(fs=200.00)', 'F3(fs=200.00)', 'F3-M2(fs=200.00)', 'F3-M2 (Imp)(fs=1.00)', 'F4(fs=200.00)', 'F4-M1(fs=200.00)', 'F4-M1 (Imp)(fs=1.00)', 'Inductance Abdom(fs=25.00)', 'Inductance Thora(fs=25.00)', 'K(fs=25.00)', 'Left Leg(fs=200.00)', 'Left Leg Impedan(fs=1.00)', 'M1(fs=200.00)', 'M1M2(fs=200.00)', 'M2(fs=200.00)', 'Mask Pressure(fs=200.00)', 'Nasal Pressure(fs=200.00)', 'O1(fs=200.00)', 'O1-M2(fs=200.00)', 'O1-M2 (Imp)(fs=1.00)', 'O2(fs=200.00)', 'O2-M1(fs=200.00)', 'O2-M1 (Imp)(fs=1.00)', 'Pulse Waveform(fs=75.00)', 'PosAngle(fs=20.00)', 'PTT(fs=75.00)', 'Right Leg(fs=200.00)', 'Right Leg Impeda(fs=1.00)', 'RIP Flow(fs=25.00)', 'Saturation(fs=3.00)', 'Thermistor(fs=200.00)', 'Thorax Fast(fs=200.00)', 'Chest(fs=25.00)', 'Voltage (battery(fs=100.00)', 'Voltage (bluetoo(fs=100.00)', 'Voltage (core)(fs=100.00)', 'X Axis(fs=20.00)', 'Y Axis(fs=20.00)', 'Z Axis(fs=20.00)']. duration=23950.0s
+[NoxRecording] After EDF merge: total ch_index keys=224 (some are aliases)
+[XLS] openpyxl 無法讀取 D02_16238392_PSG event_20260413.xlsx (Unable to read workbook: could not read worksheets from C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D02_16238392_PSG_20260413\D02_16238392_PSG event_20260413.xlsx.
+This is most probably because the workbook source files contain some invalid XML.
+Please see the exception for more details.)，改以 XML 解析
+[XLS] 已解析 256 筆事件：D02_16238392_PSG event_20260413.xlsx
+[EDF] get_data routed to EDF source for channel='C3-M2' (stem=C3-M2)
+[PASS] D02  D02_16238392_PSG_20260413
+       類型=NoxRecording  時長=23950s (06:39:10)
+       通道=73  get_events=256  UI群組=18
+       事件Top3: Normal (無匹配):174, K:24, LM (無匹配):24
+
+[NoxRecording] Init D03_18056741_PSG_20260423: NDF channels=176, raw_dur~6360.0s
+[EDF] _find_companion_edf: patient_dir=C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D03_18056741_PSG_20260423
+[EDF] raw_dir=C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D03_18056741_PSG_20260423\D03_18056741_PSG raw data_2026423\20260425T214645 - 63349
+[EDF] 將在以下位置搜尋 *.edf（同級 raw data 也會被涵蓋）： ['C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D03_18056741_PSG_20260423', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D03_18056741_PSG_20260423\\D03_18056741_PSG raw data_2026423', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D03_18056741_PSG_20260423\\D03_18056741_PSG raw data_2026423\\20260425T214645 - 63349', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input']
+[EDF] 在以上位置共找到 1 個 .edf 候選: ['C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D03_18056741_PSG_20260423\\D03_18056741_PSG edf_20260423.edf']
+[EDF] Chosen companion EDF: C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D03_18056741_PSG_20260423\D03_18056741_PSG edf_20260423.edf
+[EDF] Companion found, will attempt merge (NDF priority for overlaps)
+[EDF] Starting _merge_edf_only_channels for C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D03_18056741_PSG_20260423\D03_18056741_PSG edf_20260423.edf
+[EDF] Standard EDF open OK via pyedflib: standard EDF, n_signals=99
+[EDF] Added 34 EDF-only channels: ['1-2(fs=200.00)', '1-2 (Imp)(fs=1.00)', '1-F(fs=200.00)', '2-F(fs=200.00)', 'Abdomen CaL(fs=25.00)', 'Abdomen Fast(fs=200.00)', 'C3-M2(fs=200.00)', 'C3-M2 (Imp)(fs=1.00)', 'C4-M1(fs=200.00)', 'C4-M1 (Imp)(fs=1.00)', 'cRIP Sum(fs=25.00)', 'E1-M2(fs=200.00)', 'E1-M2 (Imp)(fs=1.00)', 'E2-M1(fs=200.00)', 'E2-M1 (Imp)(fs=1.00)', 'F3-M2(fs=200.00)', 'F3-M2 (Imp)(fs=1.00)', 'F4-M1(fs=200.00)', 'F4-M1 (Imp)(fs=1.00)', 'Inductance Abdom(fs=25.00)', 'Inductance Thora(fs=25.00)', 'Left Leg Impedan(fs=1.00)', 'M1M2(fs=200.00)', 'Mask Pressure(fs=200.00)', 'O1-M2(fs=200.00)', 'O1-M2 (Imp)(fs=1.00)', 'O2-M1(fs=200.00)', 'O2-M1 (Imp)(fs=1.00)', 'Pulse Waveform(fs=75.00)', 'PosAngle(fs=20.00)', 'Right Leg Impeda(fs=1.00)', 'Saturation(fs=1.00)', 'Thorax Fast(fs=200.00)', 'Voltage (battery(fs=100.00)']. duration=5780.0s
+[NoxRecording] After EDF merge: total ch_index keys=244 (some are aliases)
+[XLS] openpyxl 無法讀取 D03_18056741_PSG event_20260423.xlsx (Unable to read workbook: could not read worksheets from C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D03_18056741_PSG_20260423\D03_18056741_PSG event_20260423.xlsx.
+This is most probably because the workbook source files contain some invalid XML.
+Please see the exception for more details.)，改以 XML 解析
+[XLS] 已解析 214 筆事件：D03_18056741_PSG event_20260423.xlsx
+[EDF] get_data routed to EDF source for channel='C3-M2' (stem=C3-M2)
+[PASS] D03  D03_18056741_PSG_20260423
+       類型=NoxRecording  時長=5780s (01:36:20)
+       通道=76  get_events=215  UI群組=14
+       事件Top3: 2:129, k:44, 1:16
+
+[NoxRecording] Init D18_17923057_PSG_20260511: NDF channels=146, raw_dur~25107.0s
+[EDF] _find_companion_edf: patient_dir=C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D18_17923057_PSG_20260511
+[EDF] raw_dir=C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D18_17923057_PSG_20260511\D18_17923057_PSG raw data_20260511\20260511T220227 - 801f4
+[EDF] 將在以下位置搜尋 *.edf（同級 raw data 也會被涵蓋）： ['C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D18_17923057_PSG_20260511', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D18_17923057_PSG_20260511\\D18_17923057_PSG raw data_20260511', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D18_17923057_PSG_20260511\\D18_17923057_PSG raw data_20260511\\20260511T220227 - 801f4', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input']
+[EDF] 在以上位置共找到 1 個 .edf 候選: ['C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D18_17923057_PSG_20260511\\D18_17923057_PSG edf_20260511.edf']
+[EDF] Chosen companion EDF: C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D18_17923057_PSG_20260511\D18_17923057_PSG edf_20260511.edf
+[EDF] Companion found, will attempt merge (NDF priority for overlaps)
+[EDF] Starting _merge_edf_only_channels for C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D18_17923057_PSG_20260511\D18_17923057_PSG edf_20260511.edf
+[EDF] pyedflib cannot open (C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D18_17923057_PSG_20260511\D18_17923057_PSG edf_20260511.edf: the file is not EDF(+) or BDF(+) compliant (Physical Maximum)); using Nox proprietary EDF parser
+[EDF] Nox parser OK: n_signals=92, n_records=2510, duration=25100.0s
+[EDF] Added 51 EDF-only channels: ['1(fs=200.00)', '1-2(fs=200.00)', '1-2 (Imp)(fs=1.00)', '1-F(fs=200.00)', '2(fs=200.00)', '2-F(fs=200.00)', 'Abdomen CaL(fs=25.00)', 'Abdomen(fs=25.00)', 'Light(fs=1.00)', 'C3-M2(fs=200.00)', 'C3-M2 (Imp)(fs=1.00)', 'C4(fs=200.00)', 'C4-M1(fs=200.00)', 'C4-M1 (Imp)(fs=1.00)', 'cRIP Sum(fs=25.00)', 'E1(fs=200.00)', 'E1-M2(fs=200.00)', 'E1-M2 (Imp)(fs=1.00)', 'E2(fs=200.00)', 'E2-M1(fs=200.00)', 'E2-M1 (Imp)(fs=1.00)', 'ECG(fs=200.00)', 'F3(fs=200.00)', 'F3-M2(fs=200.00)', 'F3-M2 (Imp)(fs=1.00)', 'F4(fs=200.00)', 'F4-M1(fs=200.00)', 'F4-M1 (Imp)(fs=1.00)', 'Inductance Abdom(fs=25.00)', 'Inductance Thora(fs=25.00)', 'Left Leg Impedan(fs=1.00)', 'M1(fs=200.00)', 'M1M2(fs=200.00)', 'M2(fs=200.00)', 'Nasal Pressure(fs=200.00)', 'O1(fs=200.00)', 'O1-M2(fs=200.00)', 'O1-M2 (Imp)(fs=1.00)', 'O2(fs=200.00)', 'O2-M1(fs=200.00)', 'O2-M1 (Imp)(fs=1.00)', 'Pulse Waveform(fs=75.00)', 'PosAngle(fs=20.00)', 'Right Leg(fs=200.00)', 'Right Leg Impeda(fs=1.00)', 'Saturation(fs=3.00)', 'Thermistor(fs=200.00)', 'Chest(fs=25.00)', 'Voltage (battery(fs=100.00)', 'Voltage (bluetoo(fs=100.00)', 'Y Axis(fs=20.00)']. duration=25100.0s
+[NoxRecording] After EDF merge: total ch_index keys=246 (some are aliases)
+[XLS] 已解析 10115 筆事件：D18_17923057_PSG event_20260511.xls
+[EDF] get_data routed to EDF source for channel='C3-M2' (stem=C3-M2)
+[PASS] D18  D18_17923057_PSG_20260511
+       類型=NoxRecording  時長=24905s (06:55:05)
+       通道=77  get_events=10135  UI群組=32
+       事件Top3: Normal (無匹配):4508, snore:1393, flow limitation:1013
+
+[NoxRecording] Init D20_18075135_PSG_20260512: NDF channels=179, raw_dur~23591.9s
+[EDF] _find_companion_edf: patient_dir=C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D20_18075135_PSG_20260512
+[EDF] raw_dir=C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D20_18075135_PSG_20260512\D20_18075135_PSG raw data_20260512\20260512T214423 - 953bb
+[EDF] 將在以下位置搜尋 *.edf（同級 raw data 也會被涵蓋）： ['C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D20_18075135_PSG_20260512', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D20_18075135_PSG_20260512\\D20_18075135_PSG raw data_20260512', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D20_18075135_PSG_20260512\\D20_18075135_PSG raw data_20260512\\20260512T214423 - 953bb', 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input']
+[EDF] 在以上位置共找到 1 個 .edf 候選: ['C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader\\input\\D20_18075135_PSG_20260512\\D20_18075135_PSG edf_20260512.edf']
+[EDF] Chosen companion EDF: C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D20_18075135_PSG_20260512\D20_18075135_PSG edf_20260512.edf
+[EDF] Companion found, will attempt merge (NDF priority for overlaps)
+[EDF] Starting _merge_edf_only_channels for C:\Users\dominic.hong\Projects\260611EDFfilereader\input\D20_18075135_PSG_20260512\D20_18075135_PSG edf_20260512.edf
+[EDF] Standard EDF open OK via pyedflib: standard EDF, n_signals=92
+[EDF] Added 35 EDF-only channels: ['1-2(fs=200.00)', '1-2 (Imp)(fs=1.00)', '1-F(fs=200.00)', '2-F(fs=200.00)', 'Abdomen CaL(fs=25.00)', 'Abdomen(fs=25.00)', 'Light(fs=1.00)', 'C3-M2(fs=200.00)', 'C3-M2 (Imp)(fs=1.00)', 'C4-M1(fs=200.00)', 'C4-M1 (Imp)(fs=1.00)', 'cRIP Sum(fs=25.00)', 'E1-M2(fs=200.00)', 'E1-M2 (Imp)(fs=1.00)', 'E2-M1(fs=200.00)', 'E2-M1 (Imp)(fs=1.00)', 'F3-M2(fs=200.00)', 'F3-M2 (Imp)(fs=1.00)', 'F4-M1(fs=200.00)', 'F4-M1 (Imp)(fs=1.00)', 'Inductance Abdom(fs=25.00)', 'Inductance Thora(fs=25.00)', 'Left Leg Impedan(fs=1.00)', 'M1M2(fs=200.00)', 'O1-M2(fs=200.00)', 'O1-M2 (Imp)(fs=1.00)', 'O2-M1(fs=200.00)', 'O2-M1 (Imp)(fs=1.00)', 'Pulse Waveform(fs=75.00)', 'PosAngle(fs=20.00)', 'Right Leg Impeda(fs=1.00)', 'Saturation(fs=3.00)', 'Chest(fs=25.00)', 'Voltage (battery(fs=100.00)', 'Voltage (bluetoo(fs=100.00)']. duration=24233.0s
+[NoxRecording] After EDF merge: total ch_index keys=249 (some are aliases)
+[XLS] 已解析 8376 筆事件：D20_18075135_PSG event_20260512.xls
+[EDF] get_data routed to EDF source for channel='C3-M2' (stem=C3-M2)
+[PASS] D20  D20_18075135_PSG_20260512
+       類型=NoxRecording  時長=23564s (06:32:44)
+       通道=77  get_events=8383  UI群組=34
+       事件Top3: Normal (無匹配):5168, LM (無匹配):936, flow limitation:653
+
+========================================================================
+總結果: 全部 PASS
+========================================================================
+1001 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.6
+1001 INFO: Python: 3.12.10
+1050 INFO: Platform: Windows-11-10.0.26100-SP0
+1050 INFO: Python environment: C:\Users\dominic.hong\AppData\Local\Programs\Python\Python312
+1051 INFO: wrote C:\Users\dominic.hong\Projects\260611EDFfilereader\NoxPSGViewer.spec
+1052 INFO: Removing temporary files and cleaning cache in C:\Users\dominic.hong\AppData\Local\pyinstaller
+3043 WARNING: collect_data_files - skipping data collection for module 'PyQt6-Qt6' as it is not a package.
+3044 WARNING: collect_dynamic_libs - skipping library collection for module 'PyQt6-Qt6' as it is not a package.
+253 WARNING: Failed to collect submodules for 'pyqtgraph.opengl' because importing 'pyqtgraph.opengl' raised: ModuleNotFoundError: No module named 'OpenGL'
+4770 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader',
+ 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\python312.zip',
+ 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\DLLs',
+ 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib',
+ 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312',
+ 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages',
+ 'C:\\Users\\dominic.hong\\Projects\\260611EDFfilereader']
+5142 INFO: Appending 'binaries' from .spec
+5152 INFO: Appending 'datas' from .spec
+5350 INFO: checking Analysis
+5351 INFO: Building Analysis because Analysis-00.toc is non existent
+5351 INFO: Looking for Python shared library...
+5351 INFO: Using Python shared library: C:\Users\dominic.hong\AppData\Local\Programs\Python\Python312\python312.dll
+5351 INFO: Running Analysis Analysis-00.toc
+5351 INFO: Target bytecode optimization level: 0
+5351 INFO: Initializing module dependency graph...
+5352 INFO: Initializing module graph hook caches...
+5362 INFO: Analyzing modules for base_library.zip ...
+6376 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+6864 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+7503 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+8499 INFO: Caching module dependency graph...
+8593 INFO: Analyzing C:\Users\dominic.hong\Projects\260611EDFfilereader\noxpsg_viewer.py
+8832 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+9084 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+9084 INFO: SetuptoolsInfo: initializing cached setuptools info...
+9680 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+9793 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+9941 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+10261 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+10579 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+10638 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+11986 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+12166 INFO: Processing standard module hook 'hook-PyQt6.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+12607 INFO: Processing standard module hook 'hook-PyQt6.QtWidgets.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+16077 INFO: Processing standard module hook 'hook-PyQt6.QtCore.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+20057 INFO: Processing standard module hook 'hook-PyQt6.QtGui.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+38044 INFO: Processing standard module hook 'hook-pyqtgraph.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+252 WARNING: Failed to collect submodules for 'pyqtgraph.opengl' because importing 'pyqtgraph.opengl' raised: ModuleNotFoundError: No module named 'OpenGL'
+38738 INFO: hook-pyqtgraph: selected 'PyQt6' as Qt bindings because hook for 'PyQt6' has been run before.
+38798 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+38802 INFO: Processing standard module hook 'hook-PyQt6.uic.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+38994 INFO: Processing standard module hook 'hook-PyQt6.QtSvg.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+39552 INFO: Processing standard module hook 'hook-PyQt6.QtOpenGLWidgets.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+40181 INFO: Processing standard module hook 'hook-PyQt6.QtOpenGL.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+41043 INFO: Processing standard module hook 'hook-PyQt6.QtTest.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+42222 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+43008 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+43408 INFO: Processing standard module hook 'hook-pandas.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+44615 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+45577 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+47591 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+47950 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+48043 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+48570 INFO: Processing standard module hook 'hook-openpyxl.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+48671 INFO: Processing standard module hook 'hook-lxml.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+48956 INFO: Processing standard module hook 'hook-lxml.etree.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+50453 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+50524 INFO: Processing standard module hook 'hook-fsspec.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+50976 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+50976 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+50980 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+50988 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+51005 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+51005 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+51012 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+51013 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+51156 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+51293 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+51294 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+51416 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+51416 INFO: Setuptools: 'importlib_metadata' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.importlib_metadata'!
+51434 INFO: Processing standard module hook 'hook-setuptools._vendor.importlib_metadata.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+51455 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+51455 INFO: Setuptools: 'zipp' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.zipp'!
+51592 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+51592 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+51919 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+51919 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.wheel'!
+52280 INFO: Processing standard module hook 'hook-docx.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+52668 INFO: Analyzing hidden import 'numpy.core._multiarray_umath'
+52670 INFO: Analyzing hidden import 'PyQt6.QAxContainer'
+52674 INFO: Processing standard module hook 'hook-PyQt6.QAxContainer.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+53127 INFO: Analyzing hidden import 'PyQt6.QtBluetooth'
+53158 INFO: Processing standard module hook 'hook-PyQt6.QtBluetooth.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+53544 INFO: Analyzing hidden import 'PyQt6.QtDBus'
+53564 INFO: Processing standard module hook 'hook-PyQt6.QtDBus.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+54075 INFO: Analyzing hidden import 'PyQt6.QtDesigner'
+54094 INFO: Processing standard module hook 'hook-PyQt6.QtDesigner.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+54770 WARNING: QtLibraryInfo(PyQt6): could not find translations with base name 'designer'! These translations will not be collected.
+54770 INFO: Analyzing hidden import 'PyQt6.QtHelp'
+54779 INFO: Processing standard module hook 'hook-PyQt6.QtHelp.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+55378 INFO: Analyzing hidden import 'PyQt6.QtMultimedia'
+55425 INFO: Processing standard module hook 'hook-PyQt6.QtMultimedia.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+57855 INFO: Processing standard module hook 'hook-PyQt6.QtNetwork.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+62101 INFO: Analyzing hidden import 'PyQt6.QtMultimediaWidgets'
+62105 INFO: Processing standard module hook 'hook-PyQt6.QtMultimediaWidgets.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+62866 INFO: Analyzing hidden import 'PyQt6.QtNfc'
+62884 INFO: Processing standard module hook 'hook-PyQt6.QtNfc.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+63601 INFO: Analyzing hidden import 'PyQt6.QtPdf'
+63612 INFO: Processing standard module hook 'hook-PyQt6.QtPdf.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+64449 INFO: Analyzing hidden import 'PyQt6.QtPdfWidgets'
+64454 INFO: Processing standard module hook 'hook-PyQt6.QtPdfWidgets.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+65112 INFO: Analyzing hidden import 'PyQt6.QtPositioning'
+65144 INFO: Processing standard module hook 'hook-PyQt6.QtPositioning.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+66775 INFO: Analyzing hidden import 'PyQt6.QtPrintSupport'
+66789 INFO: Processing standard module hook 'hook-PyQt6.QtPrintSupport.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+67659 INFO: Analyzing hidden import 'PyQt6.QtQml'
+67713 INFO: Processing standard module hook 'hook-PyQt6.QtQml.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+83861 INFO: Analyzing hidden import 'PyQt6.QtQuick'
+83906 INFO: Processing standard module hook 'hook-PyQt6.QtQuick.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+84855 INFO: Analyzing hidden import 'PyQt6.QtQuick3D'
+84861 INFO: Processing standard module hook 'hook-PyQt6.QtQuick3D.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+85505 INFO: Analyzing hidden import 'PyQt6.QtQuickWidgets'
+85509 INFO: Processing standard module hook 'hook-PyQt6.QtQuickWidgets.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+86125 INFO: Analyzing hidden import 'PyQt6.QtRemoteObjects'
+86131 INFO: Processing standard module hook 'hook-PyQt6.QtRemoteObjects.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+86627 INFO: Analyzing hidden import 'PyQt6.QtSensors'
+86644 INFO: Processing standard module hook 'hook-PyQt6.QtSensors.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+87463 INFO: Analyzing hidden import 'PyQt6.QtSerialPort'
+87469 INFO: Processing standard module hook 'hook-PyQt6.QtSerialPort.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+88008 INFO: Analyzing hidden import 'PyQt6.QtSpatialAudio'
+88015 INFO: Processing standard module hook 'hook-PyQt6.QtSpatialAudio.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+88557 INFO: Analyzing hidden import 'PyQt6.QtSql'
+88584 INFO: Processing standard module hook 'hook-PyQt6.QtSql.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+90266 INFO: Analyzing hidden import 'PyQt6.QtStateMachine'
+90279 INFO: Processing standard module hook 'hook-PyQt6.QtStateMachine.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+90562 INFO: Analyzing hidden import 'PyQt6.QtSvgWidgets'
+90564 INFO: Processing standard module hook 'hook-PyQt6.QtSvgWidgets.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+91083 INFO: Analyzing hidden import 'PyQt6.QtTextToSpeech'
+91087 INFO: Processing standard module hook 'hook-PyQt6.QtTextToSpeech.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+92188 INFO: Analyzing hidden import 'PyQt6.QtWebChannel'
+92190 INFO: Processing standard module hook 'hook-PyQt6.QtWebChannel.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+92659 INFO: Analyzing hidden import 'PyQt6.QtWebSockets'
+92668 INFO: Processing standard module hook 'hook-PyQt6.QtWebSockets.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+93107 INFO: Analyzing hidden import 'PyQt6.QtXml'
+93121 INFO: Processing standard module hook 'hook-PyQt6.QtXml.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+93548 INFO: Analyzing hidden import 'PyQt6.lupdate'
+93568 INFO: Analyzing hidden import 'PyQt6.lupdate.pylupdate'
+93570 INFO: Analyzing hidden import 'PyQt6.uic.pyuic'
+93573 INFO: Analyzing hidden import 'pyqtgraph.PlotData'
+93574 INFO: Analyzing hidden import 'pyqtgraph.configfile'
+93579 INFO: Analyzing hidden import 'pyqtgraph.dockarea'
+93603 INFO: Analyzing hidden import 'pyqtgraph.examples'
+93619 INFO: Analyzing hidden import 'pyqtgraph.examples.Arrow'
+93621 INFO: Analyzing hidden import 'pyqtgraph.examples.AxisItem_label_overlap'
+93622 INFO: Analyzing hidden import 'pyqtgraph.examples.BarGraphItem'
+93623 INFO: Analyzing hidden import 'pyqtgraph.examples.BoxplotItem'
+93624 INFO: Analyzing hidden import 'pyqtgraph.examples.CLIexample'
+93625 INFO: Analyzing hidden import 'pyqtgraph.examples.ColorBarItem'
+93627 INFO: Analyzing hidden import 'pyqtgraph.examples.ColorButton'
+93628 INFO: Analyzing hidden import 'pyqtgraph.examples.ColorGradientPlots'
+93633 INFO: Analyzing hidden import 'pyqtgraph.examples.ConsoleWidget'
+93634 INFO: Analyzing hidden import 'pyqtgraph.examples.CustomGraphItem'
+93638 INFO: Analyzing hidden import 'pyqtgraph.examples.DataSlicing'
+93640 INFO: Analyzing hidden import 'pyqtgraph.examples.DataTreeWidget'
+93641 INFO: Analyzing hidden import 'pyqtgraph.examples.DateAxisItem'
+93642 INFO: Analyzing hidden import 'pyqtgraph.examples.DateAxisItem_QtDesigner'
+93643 INFO: Analyzing hidden import 'pyqtgraph.examples.DiffTreeWidget'
+93644 INFO: Analyzing hidden import 'pyqtgraph.examples.Draw'
+93646 INFO: Analyzing hidden import 'pyqtgraph.examples.ErrorBarItem'
+93647 INFO: Analyzing hidden import 'pyqtgraph.examples.FillBetweenItem'
+93649 INFO: Analyzing hidden import 'pyqtgraph.examples.Flowchart'
+93761 INFO: Analyzing hidden import 'pyqtgraph.examples.FlowchartCustomNode'
+93763 INFO: Analyzing hidden import 'pyqtgraph.examples.GLBarGraphItem'
+93851 INFO: Analyzing hidden import 'pyqtgraph.examples.GLGradientLegendItem'
+93852 INFO: Analyzing hidden import 'pyqtgraph.examples.GLGraphItem'
+93853 INFO: Analyzing hidden import 'pyqtgraph.examples.GLImageItem'
+93855 INFO: Analyzing hidden import 'pyqtgraph.examples.GLIsosurface'
+93857 INFO: Analyzing hidden import 'pyqtgraph.examples.GLLinePlotItem'
+93858 INFO: Analyzing hidden import 'pyqtgraph.examples.GLMeshItem'
+93861 INFO: Analyzing hidden import 'pyqtgraph.examples.GLPainterItem'
+93864 INFO: Analyzing hidden import 'pyqtgraph.examples.GLScatterPlotItem'
+93867 INFO: Analyzing hidden import 'pyqtgraph.examples.GLSurfacePlot'
+93870 INFO: Analyzing hidden import 'pyqtgraph.examples.GLTextItem'
+93872 INFO: Analyzing hidden import 'pyqtgraph.examples.GLViewWidget'
+93872 INFO: Analyzing hidden import 'pyqtgraph.examples.GLVolumeItem'
+93875 INFO: Analyzing hidden import 'pyqtgraph.examples.GLshaders'
+93876 INFO: Analyzing hidden import 'pyqtgraph.examples.GradientEditor'
+93877 INFO: Analyzing hidden import 'pyqtgraph.examples.GradientWidget'
+93878 INFO: Analyzing hidden import 'pyqtgraph.examples.GraphItem'
+93879 INFO: Analyzing hidden import 'pyqtgraph.examples.GraphicsLayout'
+93880 INFO: Analyzing hidden import 'pyqtgraph.examples.GraphicsScene'
+93882 INFO: Analyzing hidden import 'pyqtgraph.examples.HistogramLUT'
+93883 INFO: Analyzing hidden import 'pyqtgraph.examples.ImageItem'
+93884 INFO: Analyzing hidden import 'pyqtgraph.examples.ImageView'
+93886 INFO: Analyzing hidden import 'pyqtgraph.examples.InfiniteLine'
+93888 INFO: Analyzing hidden import 'pyqtgraph.examples.InteractiveParameter'
+93890 INFO: Analyzing hidden import 'pyqtgraph.examples.JoystickButton'
+93891 INFO: Analyzing hidden import 'pyqtgraph.examples.Legend'
+93893 INFO: Analyzing hidden import 'pyqtgraph.examples.LogPlotTest'
+93895 INFO: Analyzing hidden import 'pyqtgraph.examples.MatrixDisplayExample'
+93897 INFO: Analyzing hidden import 'pyqtgraph.examples.MouseSelection'
+93899 INFO: Analyzing hidden import 'pyqtgraph.examples.MultiDataPlot'
+93902 INFO: Analyzing hidden import 'pyqtgraph.examples.MultiPlotSpeedTest'
+93904 INFO: Analyzing hidden import 'pyqtgraph.examples.MultiplePlotAxes'
+93905 INFO: Analyzing hidden import 'pyqtgraph.examples.NonUniformImage'
+93911 INFO: Analyzing hidden import 'pyqtgraph.examples.PColorMeshItem'
+93915 INFO: Analyzing hidden import 'pyqtgraph.examples.PanningPlot'
+93916 INFO: Analyzing hidden import 'pyqtgraph.examples.PlotAutoRange'
+93918 INFO: Analyzing hidden import 'pyqtgraph.examples.PlotSpeedTest'
+93923 INFO: Analyzing hidden import 'pyqtgraph.examples.PlotWidget'
+93926 INFO: Analyzing hidden import 'pyqtgraph.examples.Plotting'
+93929 INFO: Analyzing hidden import 'pyqtgraph.examples.ProgressDialog'
+93931 INFO: Analyzing hidden import 'pyqtgraph.examples.ROIExamples'
+93935 INFO: Analyzing hidden import 'pyqtgraph.examples.ROItypes'
+93938 INFO: Analyzing hidden import 'pyqtgraph.examples.RemoteGraphicsView'
+93939 INFO: Analyzing hidden import 'pyqtgraph.examples.RemoteSpeedTest'
+93941 INFO: Analyzing hidden import 'pyqtgraph.examples.RunExampleApp'
+93943 INFO: Analyzing hidden import 'pyqtgraph.examples.ScaleBar'
+93943 INFO: Analyzing hidden import 'pyqtgraph.examples.ScatterPlot'
+93946 INFO: Analyzing hidden import 'pyqtgraph.examples.ScatterPlotSpeedTest'
+93950 INFO: Analyzing hidden import 'pyqtgraph.examples.ScatterPlotWidget'
+93951 INFO: Analyzing hidden import 'pyqtgraph.examples.SimplePlot'
+93952 INFO: Analyzing hidden import 'pyqtgraph.examples.SpinBox'
+93954 INFO: Analyzing hidden import 'pyqtgraph.examples.Symbols'
+93956 INFO: Analyzing hidden import 'pyqtgraph.examples.TableWidget'
+93957 INFO: Analyzing hidden import 'pyqtgraph.examples.TreeWidget'
+93958 INFO: Analyzing hidden import 'pyqtgraph.examples.VideoSpeedTest'
+93965 INFO: Analyzing hidden import 'pyqtgraph.examples.VideoTemplate_generic'
+93972 INFO: Analyzing hidden import 'pyqtgraph.examples.ViewBox'
+93975 INFO: Analyzing hidden import 'pyqtgraph.examples.ViewBoxFeatures'
+93976 INFO: Analyzing hidden import 'pyqtgraph.examples.ViewLimits'
+93977 INFO: Analyzing hidden import 'pyqtgraph.examples.__main__'
+93977 INFO: Analyzing hidden import 'pyqtgraph.examples._buildParamTypes'
+93980 INFO: Analyzing hidden import 'pyqtgraph.examples._paramtreecfg'
+93982 INFO: Analyzing hidden import 'pyqtgraph.examples.beeswarm'
+93983 INFO: Analyzing hidden import 'pyqtgraph.examples.colorMaps'
+93985 INFO: Analyzing hidden import 'pyqtgraph.examples.colorMapsLinearized'
+93988 INFO: Analyzing hidden import 'pyqtgraph.examples.console_exception_inspection'
+93991 INFO: Analyzing hidden import 'pyqtgraph.examples.contextMenu'
+93994 INFO: Analyzing hidden import 'pyqtgraph.examples.crosshair'
+93996 INFO: Analyzing hidden import 'pyqtgraph.examples.customGraphicsItem'
+93997 INFO: Analyzing hidden import 'pyqtgraph.examples.customPlot'
+93999 INFO: Analyzing hidden import 'pyqtgraph.examples.designerExample'
+94000 INFO: Analyzing hidden import 'pyqtgraph.examples.dockarea'
+94003 INFO: Analyzing hidden import 'pyqtgraph.examples.exampleLoaderTemplate_generic'
+94005 INFO: Analyzing hidden import 'pyqtgraph.examples.fractal'
+94008 INFO: Analyzing hidden import 'pyqtgraph.examples.glow'
+94011 INFO: Analyzing hidden import 'pyqtgraph.examples.hdf5'
+94014 INFO: Analyzing hidden import 'pyqtgraph.examples.histogram'
+94015 INFO: Analyzing hidden import 'pyqtgraph.examples.imageAnalysis'
+94018 INFO: Analyzing hidden import 'pyqtgraph.examples.infiniteline_performance'
+94019 INFO: Analyzing hidden import 'pyqtgraph.examples.isocurve'
+94021 INFO: Analyzing hidden import 'pyqtgraph.examples.jupyter_console_example'
+94022 INFO: Analyzing hidden import 'pyqtgraph.examples.linkedViews'
+94023 INFO: Analyzing hidden import 'pyqtgraph.examples.logAxis'
+94025 INFO: Analyzing hidden import 'pyqtgraph.examples.multiplePlotSpeedTest'
+94026 INFO: Analyzing hidden import 'pyqtgraph.examples.multiprocess'
+94028 INFO: Analyzing hidden import 'pyqtgraph.examples.optics'
+94041 INFO: Analyzing hidden import 'pyqtgraph.examples.optics_demos'
+94044 INFO: Analyzing hidden import 'pyqtgraph.examples.parallelize'
+94046 INFO: Analyzing hidden import 'pyqtgraph.examples.parametertree'
+94050 INFO: Analyzing hidden import 'pyqtgraph.examples.relativity'
+94070 INFO: Analyzing hidden import 'pyqtgraph.examples.relativity_demo'
+94071 INFO: Analyzing hidden import 'pyqtgraph.examples.scrollingPlots'
+94073 INFO: Analyzing hidden import 'pyqtgraph.examples.syntax'
+94078 INFO: Analyzing hidden import 'pyqtgraph.examples.template'
+94078 INFO: Analyzing hidden import 'pyqtgraph.examples.test_examples'
+94087 INFO: Analyzing hidden import 'pyqtgraph.examples.text'
+94089 INFO: Analyzing hidden import 'pyqtgraph.examples.verlet_chain'
+94093 INFO: Analyzing hidden import 'pyqtgraph.examples.verlet_chain_demo'
+94097 INFO: Analyzing hidden import 'pyqtgraph.frozenSupport'
+94100 INFO: Analyzing hidden import 'pyqtgraph.multiprocess.bootstrap'
+94101 INFO: Analyzing hidden import 'pyqtgraph.util.garbage_collector'
+94103 INFO: Analyzing hidden import 'pyqtgraph.util.get_resolution'
+94104 INFO: Analyzing hidden import 'pyqtgraph.util.glinfo'
+94105 INFO: Processing module hooks (post-graph stage)...
+94189 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+94550 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+94587 INFO: Processing standard module hook 'hook-cryptography.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+95669 INFO: hook-cryptography: cryptography does not seem to be using dynamically linked OpenSSL.
+96127 INFO: Processing standard module hook 'hook-lxml.isoschematron.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+96269 INFO: Processing standard module hook 'hook-lxml.objectify.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+96270 INFO: Processing standard module hook 'hook-tzdata.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+96782 INFO: Performing binary vs. data reclassification (4623 entries)
+97137 INFO: Looking for ctypes DLLs
+97175 INFO: Analyzing run-time hooks ...
+97184 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+97186 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+97187 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+97189 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+97190 INFO: Including run-time hook 'pyi_rth_cryptography_openssl.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+97190 INFO: Including run-time hook 'pyi_rth_pyqt6.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+97192 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+97193 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+97196 INFO: Including run-time hook 'pyi_rth_pyqtgraph_multiprocess.py' from 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+97334 INFO: Creating base_library.zip...
+97352 INFO: Looking for dynamic libraries
+98656 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\bin', 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\pandas.libs']
+98657 INFO: Extra DLL search directories (PATH): ['C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\bin']
+100953 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\geometryloaders\\defaultgeometryloader.dll'.
+100953 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\geometryloaders\\defaultgeometryloader.dll'.
+100954 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\geometryloaders\\gltfgeometryloader.dll'.
+100954 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\geometryloaders\\gltfgeometryloader.dll'.
+100972 WARNING: Library not found: could not resolve 'Qt6QmlCompiler.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\qmllint\\qdslintplugin.dll'.
+100973 WARNING: Library not found: could not resolve 'Qt6QmlCompiler.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\qmllint\\quicklintplugin.dll'.
+100974 WARNING: Library not found: could not resolve 'Qt6QmlCompiler.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\qmlls\\qmllsquickplugin.dll'.
+100975 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\renderers\\openglrenderer.dll'.
+100975 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\renderers\\openglrenderer.dll'.
+100976 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\renderers\\rhirenderer.dll'.
+100976 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\renderers\\rhirenderer.dll'.
+100977 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\assimpsceneimport.dll'.
+100977 WARNING: Library not found: could not resolve 'Qt63DAnimation.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\assimpsceneimport.dll'.
+100978 WARNING: Library not found: could not resolve 'Qt63DExtras.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\assimpsceneimport.dll'.
+100978 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\assimpsceneimport.dll'.
+100979 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneexport.dll'.
+100979 WARNING: Library not found: could not resolve 'Qt63DExtras.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneexport.dll'.
+100979 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneexport.dll'.
+100979 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneimport.dll'.
+100980 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneimport.dll'.
+100980 WARNING: Library not found: could not resolve 'Qt63DExtras.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneimport.dll'.
+100981 WARNING: Library not found: could not resolve 'Qt6Scxml.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\scxmldatamodel\\qscxmlecmascriptdatamodel.dll'.
+100982 WARNING: Library not found: could not resolve 'fbclient.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sqldrivers\\qsqlibase.dll'.
+100983 WARNING: Library not found: could not resolve 'MIMAPI64.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sqldrivers\\qsqlmimer.dll'.
+100985 WARNING: Library not found: could not resolve 'OCI.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sqldrivers\\qsqloci.dll'.
+100986 WARNING: Library not found: could not resolve 'LIBPQ.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sqldrivers\\qsqlpsql.dll'.
+100988 WARNING: Library not found: could not resolve 'Qt6WebView.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\webview\\qtwebview_webengine.dll'.
+100989 WARNING: Library not found: could not resolve 'Qt6WebEngineQuick.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\webview\\qtwebview_webengine.dll'.
+100989 WARNING: Library not found: could not resolve 'Qt6WebEngineCore.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\webview\\qtwebview_webengine.dll'.
+100989 WARNING: Library not found: could not resolve 'Qt6WebView.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\webview\\qtwebview_webview2.dll'.
+100989 WARNING: Library not found: could not resolve 'Qt6QmlCore.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtCore\\qtqmlcoreplugin.dll'.
+100992 WARNING: Library not found: could not resolve 'Qt6QmlNetwork.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtNetwork\\qmlnetworkplugin.dll'.
+100994 WARNING: Library not found: could not resolve 'Qt6QmlXmlListModel.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQml\\XmlListModel\\qmlxmllistmodelplugin.dll'.
+100995 WARNING: Library not found: could not resolve 'Qt6Quick3DParticleEffects.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick3D\\ParticleEffects\\qtquick3dparticleeffectsplugin.dll'.
+100998 WARNING: Library not found: could not resolve 'Qt6QuickControls2FluentWinUI3StyleImpl.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Controls\\FluentWinUI3\\impl\\qtquickcontrols2fluentwinui3styleimplplugin.dll'.
+100999 WARNING: Library not found: could not resolve 'Qt6QuickControls2FluentWinUI3StyleImpl.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Controls\\FluentWinUI3\\qtquickcontrols2fluentwinui3styleplugin.dll'.
+101001 WARNING: Library not found: could not resolve 'Qt6QuickControls2WindowsStyleImpl.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Controls\\Windows\\impl\\qtquickcontrols2windowsstyleimplplugin.dll'.
+101004 WARNING: Library not found: could not resolve 'Qt6QmlLocalStorage.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\LocalStorage\\qmllocalstorageplugin.dll'.
+101005 WARNING: Library not found: could not resolve 'Qt63DQuickScene2D.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Scene2D\\qtquickscene2dplugin.dll'.
+101005 WARNING: Library not found: could not resolve 'Qt63DQuickScene3D.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Scene3D\\qtquickscene3dplugin.dll'.
+101006 WARNING: Library not found: could not resolve 'Qt6QuickShapesDesignHelpers.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Shapes\\DesignHelpers\\qtquickshapesdesignhelpersplugin.dll'.
+101008 WARNING: Library not found: could not resolve 'Qt6QuickVectorImageHelpers.dll', dependency of 'C:\\Users\\dominic.hong\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\VectorImage\\Helpers\\qquickvectorimagehelpersplugin.dll'.
+101220 INFO: Warnings written to C:\Users\dominic.hong\Projects\260611EDFfilereader\build\NoxPSGViewer\warn-NoxPSGViewer.txt
+101351 INFO: Graph cross-reference written to C:\Users\dominic.hong\Projects\260611EDFfilereader\build\NoxPSGViewer\xref-NoxPSGViewer.html
+101529 INFO: checking PYZ
+101529 INFO: Building PYZ because PYZ-00.toc is non existent
+101529 INFO: Building PYZ (ZlibArchive) C:\Users\dominic.hong\Projects\260611EDFfilereader\build\NoxPSGViewer\PYZ-00.pyz
+102641 INFO: Building PYZ (ZlibArchive) C:\Users\dominic.hong\Projects\260611EDFfilereader\build\NoxPSGViewer\PYZ-00.pyz completed successfully.
+102664 INFO: checking PKG
+102664 INFO: Building PKG because PKG-00.toc is non existent
+102664 INFO: Building PKG (CArchive) NoxPSGViewer.pkg
+102763 INFO: Building PKG (CArchive) NoxPSGViewer.pkg completed successfully.
+102764 INFO: Bootloader C:\Users\dominic.hong\AppData\Local\Programs\Python\Python312\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+102765 INFO: checking EXE
+102765 INFO: Building EXE because EXE-00.toc is non existent
+102765 INFO: Building EXE from EXE-00.toc
+102765 INFO: Copying bootloader EXE to C:\Users\dominic.hong\Projects\260611EDFfilereader\build\NoxPSGViewer\NoxPSGViewer.exe
+102770 INFO: Copying icon to EXE
+102773 INFO: Copying 0 resources to EXE
+102773 INFO: Embedding manifest in EXE
+102777 INFO: Appending PKG archive to EXE
+102786 INFO: Fixing EXE headers
+102852 INFO: Building EXE from EXE-00.toc completed successfully.
+102887 INFO: checking COLLECT
+102887 INFO: Building COLLECT because COLLECT-00.toc is non existent
+102888 INFO: Building COLLECT COLLECT-00.toc
+106102 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+清理舊的建置目錄 C:\Users\dominic.hong\Projects\260611EDFfilereader\dist ...
+=== 開始打包 NoxPSG Viewer (PyQt6 + pyqtgraph + noxreader) ===
+使用 one-folder 模式（推薦）。如需單檔請自行修改或用 --onefile。
+
+============================================================
+【打包完成】
+可執行檔目錄：C:\Users\dominic.hong\Projects\260611EDFfilereader\dist\NoxPSGViewer
+主執行檔：C:\Users\dominic.hong\Projects\260611EDFfilereader\dist\NoxPSGViewer\NoxPSGViewer.exe
+
+★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+重要提醒：
+  • 請「只」執行 dist 資料夾裡的 NoxPSGViewer.exe
+  • build 資料夾是 PyInstaller 建置過程的暫存檔，絕對不要執行裡面的 .exe
+    （執行 build 裡的 exe 會出現 Failed to load Python DLL 的錯誤，路徑會指向 build\...\_internal\python312.dll）
+  • 建議建置完成後直接刪除整個 build 資料夾
+★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+部署方式：
+  1. 將整個資料夾 'NoxPSGViewer' 複製到目標 Windows 電腦
+  2. 直接雙擊 NoxPSGViewer.exe
+  3. 點擊界面上的「開啟資料夾」選擇您的 PSG 資料夾（input/ 或單一病患資料夾）即可開始瀏覽
+
+提示：第一次在目標電腦執行可能較慢（Qt 資源初始化），之後會正常。
+
+正在自動清理 build 暫存資料夾：C:\Users\dominic.hong\Projects\260611EDFfilereader\build
+build 資料夾已刪除。
+已在最終資料夾產生使用說明：C:\Users\dominic.hong\Projects\260611EDFfilereader\dist\NoxPSGViewer\使用前必讀.txt
+106174 INFO: Build complete! The results are available in: C:\Users\dominic.hong\Projects\260611EDFfilereader\dist

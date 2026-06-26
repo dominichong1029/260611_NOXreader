@@ -50,4 +50,4 @@ input/
 
 # PyInstaller
 *.manifest
-NoxPSGViewer.spec  # generated with local paths, ignore
+PSGviewer.spec  # generated with local paths, ignore

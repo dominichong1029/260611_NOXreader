@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NoxPSG Viewer
+PSG Viewer
 專業級 PSG / Nox A1 臨床資料視覺化瀏覽器
 - 參考 EDFbrowser (gold standard 免費開源) 與 Noxturnal (官方 Nox 軟體) 的交互設計
 - 結構化、嚴謹展示整個資料夾的臨床資料
@@ -10,7 +10,7 @@ NoxPSG Viewer
 - 可打包為獨立 Windows .exe
 
 執行方式：
-  python noxpsg_viewer.py
+  python psg_viewer.py
 """
 
 import sys
@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QLabel, QComboBox, QSpinBox, QDoubleSpinBox, QSlider, QToolBar, QMenuBar,
     QFileDialog, QMessageBox, QTextEdit, QGroupBox, QFormLayout, QCheckBox,
     QProgressBar, QStatusBar, QAbstractItemView, QFrame, QGridLayout, QScrollArea, QSizePolicy, QLineEdit,
-    QDialog, QListWidget, QListWidgetItem, QMenu
+    QDialog, QListWidget, QListWidgetItem, QMenu, QStyle, QStyleOptionViewItem,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSettings, QSize, QEvent, QRect
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QColor, QGuiApplication, QCursor
@@ -35,14 +35,14 @@ from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QColor, QGui
 import pyqtgraph as pg
 
 # 我們的優化後端
-from noxreader import NoxStudy, NoxRecording, export_to_standard_edf
+from noxreader import NoxStudy, NoxRecording, NoxEdfRecording, export_to_standard_edf
 
 # PR2: special position renderer + VizSettings + dialog (minimal)
 from viz.position_renderer import PositionStepRenderer, VizSettings
 
 
 def format_hms(seconds: float, include_ms: bool = False) -> str:
-    """將秒數格式化為 HH:MM:SS 或 MM:SS.mmm （事件時間改為毫秒到小數三位）"""
+    """將秒數格式化為 HH:MM:SS（或含毫秒 HH:MM:SS.mmm）。無小時時仍顯示 00:，避免與 MM:SS 混淆。"""
     if seconds < 0:
         seconds = 0
     if include_ms:
@@ -51,18 +51,60 @@ def format_hms(seconds: float, include_ms: bool = False) -> str:
         m = (total_ms % 3600000) // 60000
         s = (total_ms % 60000) // 1000
         ms = total_ms % 1000
-        return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"  # 總是顯示 HH:MM:SS.mmm 毫秒三位，方便對照波形時間軸
+        return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
     total_sec = int(seconds)
     h = total_sec // 3600
     m = (total_sec % 3600) // 60
     s = total_sec % 60
-    if h > 0:
-        return f"{h:02d}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 def format_time_label(seconds: float) -> str:
     return format_hms(seconds)
+
+
+CLINICAL_DEFAULT_CHANNELS = ["snore", "spo2", "nasal pressure", "thermistor"]
+
+
+def _normalize_channel_key(name: str) -> str:
+    return name.lower().replace(" ", "")
+
+
+def channel_matches_preset(channel_name: str, preset_names: list[str]) -> bool:
+    """比對實際通道名與預設列表（忽略大小寫與空白）。"""
+    if channel_name in preset_names:
+        return True
+    norm = _normalize_channel_key(channel_name)
+    return norm in {_normalize_channel_key(p) for p in preset_names}
+
+
+class _EventChannelTable(QTableWidget):
+    """事件篩選表：點擊名稱文字區域也可切換勾選（Qt 預設僅 checkbox 小方塊可點）。"""
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            item = self.itemAt(event.pos())
+            if (
+                item is not None
+                and item.column() == 0
+                and item.flags() & Qt.ItemFlag.ItemIsUserCheckable
+            ):
+                opt = QStyleOptionViewItem()
+                opt.rect = self.visualItemRect(item)
+                opt.features = QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+                opt.checkState = item.checkState()
+                check_rect = self.style().subElementRect(
+                    QStyle.SubElement.SE_ItemViewItemCheckIndicator,
+                    opt,
+                    self,
+                )
+                if not check_rect.contains(event.pos()):
+                    item.setCheckState(
+                        Qt.CheckState.Unchecked
+                        if item.checkState() == Qt.CheckState.Checked
+                        else Qt.CheckState.Checked
+                    )
+        super().mousePressEvent(event)
 
 
 class _NumericCountItem(QTableWidgetItem):
@@ -81,24 +123,58 @@ class _NumericCountItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+class _NumericTimeItem(QTableWidgetItem):
+    """事件表「開始/結束時間、持續時間」欄專用 item。
+    排序鍵用 UserRole 的浮點數（相對全域原點的秒數 rel_s），而非顯示字串。
+    顯示字串是不含日期的牆鐘 hh:mm:ss，跨午夜時字串排序會錯（如 03:00 < 23:55），
+    用單調遞增的 rel_s 當鍵就等同「加上隱藏日期一起排序」，升/降序都正確。
+    """
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if isinstance(other, QTableWidgetItem):
+            my_val = self.data(Qt.ItemDataRole.UserRole)
+            other_val = other.data(Qt.ItemDataRole.UserRole)
+            if my_val is not None and other_val is not None:
+                try:
+                    return float(my_val) < float(other_val)
+                except (ValueError, TypeError):
+                    pass
+        return super().__lt__(other)
+
+
 class TimeAxisItem(pg.AxisItem):
     """自定義 X 軸，保持預設 tick 間隔，只改變標籤顯示格式 (時分秒/秒數 + 是否毫秒)。"""
     def __init__(self, viewer, *args, **kwargs):
         pg.AxisItem.__init__(self, *args, **kwargs)
         self.viewer = viewer
 
+    def _origin(self):
+        """取得目前錄音的全域時間原點（start_datetime）；無則 None。"""
+        if not getattr(self.viewer, 'x_axis_absolute_time', False):
+            return None
+        rec = getattr(self.viewer, 'current_rec', None)
+        return getattr(rec, 'start_datetime', None) if rec is not None else None
+
     def tickStrings(self, values, scale, spacing):
         if not values:
             return []
+        include_ms = self.viewer.x_axis_show_milliseconds
+        origin = self._origin()
         strings = []
         for v in values:
             if self.viewer.x_axis_time_format == 'seconds':
-                if self.viewer.x_axis_show_milliseconds:
+                # 秒數模式：絕對時鐘無意義，恆顯示自原點起的相對秒
+                if include_ms:
                     s = f"{v:.3f}"
                 else:
                     s = f"{v:.1f}" if spacing < 2 else f"{int(round(v))}"
+            elif origin is not None:
+                # 絕對牆鐘時間 = origin + 相對秒（v 為相對全域原點的秒數）。跨午夜由 datetime 自然進位。
+                t = origin + timedelta(seconds=float(v))
+                s = t.strftime('%H:%M:%S')
+                if include_ms:
+                    s += f".{int(t.microsecond / 1000):03d}"
             else:
-                s = format_hms(v, include_ms=self.viewer.x_axis_show_milliseconds)
+                s = format_hms(v, include_ms=include_ms)
             strings.append(s)
         return strings
 
@@ -148,13 +224,7 @@ class PatientInfoBanner(QWidget):
         self.lbl_device = QLabel()
         grid.addWidget(self.lbl_device, 1, 2)
 
-        outer.addWidget(frame, 3)
-
-        # Right side mini note / fallback area
-        self.lbl_fallback = QLabel()
-        self.lbl_fallback.setStyleSheet("color:#666; font-size:8pt;")
-        self.lbl_fallback.setWordWrap(True)
-        outer.addWidget(self.lbl_fallback, 1)
+        outer.addWidget(frame, 1)
 
         # Tooltips (clinical meaning per design) + PR5 更多臨床 tooltips
         self.lbl_id.setToolTip("資料來源識別碼")
@@ -163,30 +233,36 @@ class PatientInfoBanner(QWidget):
         self.lbl_device.setToolTip("裝置資訊")
 
     def set_patient_info(self, demo: dict):
-        """填入 demographics，處理 mask/fallback。"""
-        mrn = demo.get("mrn", "?")
-        age = demo.get("age", "?")
-        gender = demo.get("gender", "?")
+        """填入 demographics，處理 mask/fallback。版面與有報告時相同兩行結構，提示文字不擠壓主欄。"""
+        mrn = str(demo.get("mrn", "—"))
+        if " " in mrn and len(mrn) > 24:
+            mrn = mrn.split()[0]
+
+        age = demo.get("age")
+        gender = demo.get("gender")
+        age_disp = age if age not in (None, "", "?") else "—"
+        gender_disp = gender if gender not in (None, "", "?") else "—"
         h = demo.get("height_cm")
         w = demo.get("weight_kg")
         date = demo.get("study_date", "")
 
-        id_text = f"MR#: {mrn}"
-        if demo.get("note"):
-            id_text += " (報告未找到)"
-        self.lbl_id.setText(id_text)
-
-        self.lbl_age_gender.setText(f"年齡: {age}  性別: {gender}")
+        self.lbl_id.setText(f"MR#: {mrn}")
+        self.lbl_age_gender.setText(f"年齡: {age_disp}  性別: {gender_disp}")
 
         study_parts = []
         if date:
             study_parts.append(f"日期: {date}")
         if h and w:
             study_parts.append(f"H/W: {h:.0f}cm/{w:.1f}kg")
-        self.lbl_study.setText("  ".join(study_parts) if study_parts else "")
+        self.lbl_study.setText("  ".join(study_parts))
 
-        # device will be set via clinical or fallback
-        self.lbl_fallback.setText(demo.get("note", ""))
+        note = demo.get("note", "")
+        if note:
+            self.lbl_device.setText(note)
+            self.lbl_device.setStyleSheet("color:#666; font-size:9pt;")
+        else:
+            self.lbl_device.setText("")
+            self.lbl_device.setStyleSheet("")
 
     def set_from_rec(self, rec):
         """便利：直接從 recording 取 get_patient_info() 填入。"""
@@ -209,7 +285,7 @@ class PrefsManager:
     def __init__(self):
         # 預設使用 QSettings("org", "app") → Win registry (HKEY_CURRENT_USER\\Software\\...)，跨平台。
         # 清除用 settings.clear() 即可（測試/rollback 容易）；也可透過 regedit 或對應 ini 清除。
-        self.settings = QSettings("NoxPSG", "NoxPSGViewer")
+        self.settings = QSettings("PSG", "PSGviewer")
 
     def _sync(self):
         self.settings.sync()
@@ -331,12 +407,12 @@ class PrefsManager:
 UNMATCHED_SPECIAL = "__unmatched__"
 
 
-class NoxPSGViewer(QMainWindow):
+class PSGViewer(QMainWindow):
     """主視窗：結構化展示 + 專業互動式信號瀏覽器"""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("NoxPSG Viewer - 專業 PSG 臨床資料瀏覽器 (基於優化 raw .ndf 讀取)")
+        self.setWindowTitle("PSG Viewer - 專業 PSG 臨床資料瀏覽器 (基於優化 raw .ndf 讀取)")
         self.resize(1400, 900)
         # 設定合理的視窗最小尺寸，避免 MINMAXINFO 報過大的 mintrack（1393x 之類），導致移到較小解析度螢幕或多螢幕時 setGeometry 報 Unable to set geometry。
         # 使用者仍可拖曳 dock 邊界自由調整左右欄寬度（本程式已提供完整支援）。
@@ -371,6 +447,12 @@ class NoxPSGViewer(QMainWindow):
         self._update_debounce_timer.setSingleShot(True)
         self._update_debounce_timer.timeout.connect(self._perform_update_view)
 
+        # D: 事件表分批建列（大量事件時避免一次建上萬列凍結 UI）
+        self._evt_fill_timer: QTimer | None = None
+        self._evt_fill_events: list = []
+        self._evt_fill_idx: int = 0
+        self._evt_total: int = 0
+
         self.parsed_events: list[dict] = []
         self._events_loaded: bool = False  # 預設 False：只有使用者主動「載入事件資料」後才解讀所有標記，勾選時才繪製
         self._custom_xls_path: Optional[str] = None  # 用於「替換XLS/XLSX」功能，替換後的 Excel 分析事件路徑（.xls 或 .xlsx）
@@ -387,6 +469,8 @@ class NoxPSGViewer(QMainWindow):
         self.show_event_text_labels: bool = False  # 預設不顯示事件 marker 上的小文字標籤（type @ location）
         self.x_axis_time_format: str = 'hms'  # 'hms' 或 'seconds'，預設時分秒
         self.x_axis_show_milliseconds: bool = False  # 預設不顯示毫秒
+        self.x_axis_absolute_time: bool = True  # 預設顯示絕對牆鐘時間（origin + 相對秒）；關閉則顯示自 0 起的相對經過時間
+        self.antialias_on: bool = True  # 抗鋸齒（檢視選單可切換，預設開）；關閉可在密集波形大幅加速繪製
 
         # PR2: VizSettings (memory container) + position special renderers；PR4 由 PrefsManager 持久化（per-rec）
         self._viz_settings = VizSettings()
@@ -476,8 +560,8 @@ class NoxPSGViewer(QMainWindow):
 
         self.channel_table = QTableWidget()
         # 取消樣式欄位，讓控制面板更窄（移除第 6 欄 "樣式" 按鈕）
-        self.channel_table.setColumnCount(5)
-        self.channel_table.setHorizontalHeaderLabels(["顯示", "名稱", "fs (Hz)", "單位", "樣本數"])
+        self.channel_table.setColumnCount(6)
+        self.channel_table.setHorizontalHeaderLabels(["顯示", "名稱", "fs (Hz)", "單位", "樣本數", "來源"])
         self.channel_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.channel_table.itemChanged.connect(self._on_channel_check_changed)
         self.channel_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -495,7 +579,7 @@ class NoxPSGViewer(QMainWindow):
         header.setToolTip("點擊表頭排序通道。排序後波形順序會更新。")
 
         # 每個欄位都設為 Interactive，讓使用者可以手動拖拉標題分隔線調整寬度
-        for i in range(5):
+        for i in range(6):
             header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
         header.setMinimumSectionSize(28)  # 允許欄位縮得更窄，降低表格 sizeHint，避免主視窗 minSize 過大導致小螢幕 geometry 錯誤；使用者仍可手動拖拉調整
 
@@ -511,7 +595,7 @@ class NoxPSGViewer(QMainWindow):
         preset_layout.addWidget(QLabel("預設:"))
         self.preset_combo = QComboBox()
         self.preset_items = [
-            ("DeepNYX", ["snore", "spo2", "nasal pressure", "thermistor"]),
+            ("DeepNYX", CLINICAL_DEFAULT_CHANNELS),
             ("標準 PSG", ["c3", "c4", "f3", "f4", "o1", "o2", "e1", "e2", "ecg", "flow", "spo2"]),
             ("呼吸", ["flow", "nasal pressure", "abdomen rip", "thorax rip", "mask pressure", "spo2"]),
             ("Position+Resp", ["position", "flow", "spo2", "heart rate"]),
@@ -546,6 +630,26 @@ class NoxPSGViewer(QMainWindow):
         pos_layout.addWidget(self.pos_slider, 1)
         time_layout.addLayout(pos_layout)
 
+        # 絕對時間視窗（顯示目前 x 軸最小/最大牆鐘時間，使用者可自行輸入 hh:mm:ss 調整視窗）
+        # 編輯起點 → 平移視窗（保持長度）；編輯終點 → 固定起點、改變視窗長度。
+        abs_layout = QHBoxLayout()
+        abs_layout.addWidget(QLabel("絕對時間:"))
+        self.abs_start_edit = QLineEdit()
+        self.abs_start_edit.setPlaceholderText("hh:mm:ss")
+        self.abs_start_edit.setMaximumWidth(96)
+        self.abs_start_edit.setToolTip("目前視窗起點的絕對牆鐘時間；可輸入 hh:mm:ss 後按 Enter 平移視窗（保持長度）。")
+        self.abs_start_edit.editingFinished.connect(self._on_abs_start_edited)
+        abs_layout.addWidget(self.abs_start_edit)
+        abs_layout.addWidget(QLabel("-"))
+        self.abs_end_edit = QLineEdit()
+        self.abs_end_edit.setPlaceholderText("hh:mm:ss")
+        self.abs_end_edit.setMaximumWidth(96)
+        self.abs_end_edit.setToolTip("目前視窗終點的絕對牆鐘時間；可輸入 hh:mm:ss 後按 Enter 調整視窗長度（保持起點）。")
+        self.abs_end_edit.editingFinished.connect(self._on_abs_end_edited)
+        abs_layout.addWidget(self.abs_end_edit)
+        abs_layout.addStretch()
+        time_layout.addLayout(abs_layout)
+
         # 精確控制
         ctrl_layout = QHBoxLayout()
         ctrl_layout.addWidget(QLabel("開始 (秒):"))
@@ -558,8 +662,8 @@ class NoxPSGViewer(QMainWindow):
         ctrl_layout.addWidget(QLabel("長度 (秒):"))
         self.dur_spin = QDoubleSpinBox()
         self.dur_spin.setDecimals(1)
-        self.dur_spin.setRange(1, 999999)  # 動態上限在 _update_time_controls 依 max_duration 調整，避免硬編 3600 秒無法涵蓋長錄音
-        self.dur_spin.setValue(30)
+        self.dur_spin.setRange(0.1, 999999.0)  # 動態上限在 _update_time_controls 依 max_duration 調整
+        self.dur_spin.setValue(60.0)
         self.dur_spin.valueChanged.connect(self._on_time_spin_changed)
         ctrl_layout.addWidget(self.dur_spin)
 
@@ -629,7 +733,7 @@ class NoxPSGViewer(QMainWindow):
         self.btn_replace_excel.setStyleSheet("")
 
         # 改為 QTableWidget 兩欄「名稱」「數量」，預設名稱順序，header 可點擊排序（升/降）
-        self.event_channel_list = QTableWidget()
+        self.event_channel_list = _EventChannelTable()
         self.event_channel_list.setColumnCount(2)
         self.event_channel_list.setHorizontalHeaderLabels(["名稱", "數量"])
         self.event_channel_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -750,9 +854,13 @@ class NoxPSGViewer(QMainWindow):
         self.overview_plot.setYRange(0, 1, padding=0)
 
         if self.overview_region:
-            self.overview_region.setRegion([0, 60])
-            self.overview_region.setZValue(100)
-            self.overview_region.setVisible(True)
+            self._updating_view = True
+            try:
+                self.overview_region.setRegion([0, 60])
+                self.overview_region.setZValue(100)
+                self.overview_region.setVisible(True)
+            finally:
+                self._updating_view = False
         self._update_overview_region()
 
         # 在現有 overview_pg / plot 內部添加結束時間 TextItem（相同 container，不額外佔位空間）
@@ -819,8 +927,8 @@ class NoxPSGViewer(QMainWindow):
 
         self.events_table = QTableWidget()
         self.events_table.setColumnCount(6)
-        self.events_table.setHorizontalHeaderLabels(["跳轉", "開始時間", "結束時間", "持續時間", "位置", "備註"])
-        # 每個欄位都設為 Interactive，讓使用者可以手動拖拉標題分隔線調整寬度（跳轉/開始/結束/持續/位置/備註）
+        self.events_table.setHorizontalHeaderLabels(["跳轉", "開始時間", "結束時間", "持續時間", "名稱", "備註"])
+        # 每個欄位都設為 Interactive，讓使用者可以手動拖拉標題分隔線調整寬度（跳轉/開始/結束/持續/名稱/備註）
         header = self.events_table.horizontalHeader()
         for i in range(6):
             header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
@@ -909,6 +1017,12 @@ class NoxPSGViewer(QMainWindow):
         self.act_open.setShortcut(QKeySequence.StandardKey.Open)
         self.act_open.triggered.connect(self._open_folder_dialog)
 
+        self.act_open_edf = QAction("開啟 EDF 檔案...", self)
+        self.act_open_edf.setToolTip(
+            "直接開啟 Nox 儀器匯出的 .edf（含非標準 Nox 專有格式，無需 Noxturnal 授權）"
+        )
+        self.act_open_edf.triggered.connect(self._open_edf_dialog)
+
         self.act_export = QAction("匯出 EDF...", self)
         self.act_export.triggered.connect(self._export_selected_edf)
 
@@ -947,6 +1061,12 @@ class NoxPSGViewer(QMainWindow):
         self.act_exception_list.setToolTip("開啟例外匹配列表，設定 NDF 無法匹配時的例外規則（保存並應用後刷新事件相關 UI）。")
         self.act_exception_list.triggered.connect(self._on_show_exception_dialog)
 
+        # 抗鋸齒 (預設開啟；放在「事件預設背景蒙層」上方)。關閉可在密集波形時加速繪製。
+        self.act_antialias = QAction("抗鋸齒", self, checkable=True)
+        self.act_antialias.setChecked(getattr(self, 'antialias_on', True))
+        self.act_antialias.setToolTip("波形線條抗鋸齒。關閉可在密集波形/大量通道時明顯加速（線條略不平滑）。")
+        self.act_antialias.triggered.connect(self._on_toggle_antialias)
+
         # 事件預設背景蒙層 (預設關閉)
         self.act_show_event_overlay = QAction("事件預設背景蒙層", self, checkable=True)
         self.act_show_event_overlay.setChecked(getattr(self, 'show_event_background_overlay', False))
@@ -969,6 +1089,11 @@ class NoxPSGViewer(QMainWindow):
         self.act_time_hms.triggered.connect(lambda checked: self._on_x_time_format_changed('hms') if checked else None)
         self.act_time_seconds.triggered.connect(lambda checked: self._on_x_time_format_changed('seconds') if checked else None)
 
+        # X軸顯示絕對時間 (預設開啟)：開→顯示牆鐘時間(origin+秒)，關→自 0 起相對經過時間
+        self.act_x_absolute = QAction("X軸顯示絕對時間", self, checkable=True)
+        self.act_x_absolute.setChecked(getattr(self, 'x_axis_absolute_time', True))
+        self.act_x_absolute.triggered.connect(self._on_toggle_absolute_time)
+
         # X軸顯示毫秒 (預設關閉)
         self.act_show_ms = QAction("X軸顯示毫秒", self, checkable=True)
         self.act_show_ms.setChecked(getattr(self, 'x_axis_show_milliseconds', False))
@@ -980,6 +1105,7 @@ class NoxPSGViewer(QMainWindow):
         # 檔案：開啟資料夾、選擇事件Excel（現有替換功能）、匯出EDF、離開
         file_menu = menubar.addMenu("檔案 (&F)")
         file_menu.addAction(self.act_open)
+        file_menu.addAction(self.act_open_edf)
         file_menu.addAction(self.act_choose_event_excel)
         file_menu.addAction(self.act_export)
         file_menu.addSeparator()
@@ -990,8 +1116,10 @@ class NoxPSGViewer(QMainWindow):
         view_menu.addAction(self.act_fit)
         view_menu.addAction(self.act_reset_panels)
         view_menu.addSeparator()
+        view_menu.addAction(self.act_antialias)
         view_menu.addAction(self.act_show_event_overlay)
         view_menu.addAction(self.act_show_event_text_labels)
+        view_menu.addAction(self.act_x_absolute)
         xaxis_menu = QMenu("X軸時間顯示方式", view_menu)
         xaxis_menu.addAction(self.act_time_hms)
         xaxis_menu.addAction(self.act_time_seconds)
@@ -1029,6 +1157,47 @@ class NoxPSGViewer(QMainWindow):
             return
         self._load_folder(folder, show_error=True)
 
+    def _open_edf_dialog(self):
+        edf_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "開啟 EDF 檔案",
+            str(Path.cwd() / "input"),
+            "EDF 檔案 (*.edf);;所有檔案 (*.*)",
+        )
+        if not edf_path:
+            return
+        self._load_edf_file(edf_path, show_error=True)
+
+    def _load_edf_file(self, edf_path: str | Path, show_error: bool = True):
+        """直接載入單一 EDF（支援 Nox 專有非標準格式）。"""
+        self.statusBar().showMessage("載入 EDF 中...")
+        self.progress.setVisible(True)
+        self.progress.setValue(10)
+        QApplication.processEvents()
+        try:
+            self.study = NoxStudy.from_edf(edf_path)
+            self.patient_combo.clear()
+            self.patient_combo.blockSignals(True)
+            for pid in self.study.patients:
+                self.patient_combo.addItem(pid, pid)
+            self.patient_combo.blockSignals(False)
+            self.progress.setValue(40)
+            if self.study.patients:
+                self.patient_combo.setCurrentIndex(0)
+                self._on_patient_changed(0)
+            self.statusBar().showMessage(f"已載入 EDF：{Path(edf_path).name}")
+        except Exception as e:
+            if show_error:
+                QMessageBox.critical(
+                    self,
+                    "EDF 載入失敗",
+                    f"無法開啟 EDF 檔案：\n{e}\n\n"
+                    "若為 Nox A1 匯出檔，本工具使用自訂解析器讀取（無需 Noxturnal）。",
+                )
+            self.statusBar().showMessage("EDF 載入失敗")
+        finally:
+            self.progress.setVisible(False)
+
     def _get_nice_folder_display_name(self, pid: str) -> str:
         """統一為每個資料來源計算顯示用的資料夾名稱。
         不再寫死特定 pid，也不再讓摘要 MR# 覆蓋 selector。
@@ -1051,9 +1220,46 @@ class NoxPSGViewer(QMainWindow):
             pass
         return pid
 
+    def _apply_empty_state(self):
+        """無可載入資料時重置 UI 為空白，不顯示錯誤對話框。"""
+        self.current_rec = None
+        self.max_duration = 0.0
+        self.visible_channels = []
+        self.parsed_events = []
+        self._events_loaded = False
+        self._custom_xls_path = None
+        self.time_start = 0.0
+        self.time_duration = 60.0
+
+        self.patient_combo.clear()
+        if self.patient_banner:
+            self.patient_banner.set_patient_info({})
+
+        self._populate_channel_table()
+        self._populate_events_table()
+        self._init_signal_plots()
+
+        if hasattr(self, "dur_spin") and self.dur_spin:
+            try:
+                self.dur_spin.setMaximum(3600.0)
+                self.dur_spin.setValue(60.0)
+            except Exception:
+                pass
+        if hasattr(self, "start_spin") and self.start_spin:
+            try:
+                self.start_spin.setMaximum(0.0)
+                self.start_spin.setValue(0.0)
+            except Exception:
+                pass
+        if hasattr(self, "overview_end_time_label") and self.overview_end_time_label:
+            try:
+                self.overview_end_time_label.setText("")
+            except Exception:
+                pass
+
     def _load_folder(self, folder_path: str | Path, show_error: bool = True):
         """載入資料夾。
-        show_error=False 時失敗只更新 status，不跳 QMessageBox（適合非使用者主動操作的呼叫）。
+        show_error=False 時失敗只更新 status，不跳 QMessageBox（適合啟動自動載入 input）。
         只有使用者點「開啟資料夾」並選到無效結構時才顯示錯誤對話框。
         """
         self.statusBar().showMessage("載入中...")
@@ -1064,7 +1270,9 @@ class NoxPSGViewer(QMainWindow):
         try:
             self.study = NoxStudy(folder_path)
             if len(self.study) == 0:
-                raise RuntimeError("在此資料夾中找不到有效的 Nox PSG 錄音 (需包含 raw data + SETUP.INI 的子目錄)")
+                self._apply_empty_state()
+                self.statusBar().showMessage("就緒 — 未找到可載入的資料", 5000)
+                return
 
             self.patient_combo.clear()
             self.patient_combo.blockSignals(True)
@@ -1119,7 +1327,10 @@ class NoxPSGViewer(QMainWindow):
         except Exception as e:
             if show_error:
                 QMessageBox.critical(self, "載入失敗", f"無法載入資料夾：\n{e}\n\n請確認資料夾結構是否正確 (包含 raw data 子目錄與 SETUP.INI)。")
-            self.statusBar().showMessage("載入失敗")
+                self.statusBar().showMessage("載入失敗")
+            else:
+                self._apply_empty_state()
+                self.statusBar().showMessage("就緒 — 未找到可載入的資料", 5000)
         finally:
             self.progress.setVisible(False)
 
@@ -1170,10 +1381,12 @@ class NoxPSGViewer(QMainWindow):
         if self.current_rec:
             self._load_recording(self.current_rec)
 
-    def _load_recording(self, rec: NoxRecording):
+    def _load_recording(self, rec: NoxRecording | NoxEdfRecording):
         self._loading_rec = True
         self.current_rec = rec
-        self.max_duration = rec.duration_sec
+        # 概觀軸/捲軸右界用「全域跨度」（origin→max channel end），涵蓋因分批啟動而較晚結束的通道與 EDF 尾段；
+        # NoxEdfRecording 無 total_span_sec 時退回 duration_sec。
+        self.max_duration = float(getattr(rec, 'total_span_sec', None) or rec.duration_sec)
         # 立即更新時間 spin 的動態上限（長度上限從硬編 3600 改為總長，避免無法設定 >3600s 的視窗）
         if hasattr(self, 'dur_spin') and self.dur_spin:
             try:
@@ -1186,7 +1399,7 @@ class NoxPSGViewer(QMainWindow):
             except Exception:
                 pass
         if hasattr(self, 'overview_end_time_label'):
-            self.overview_end_time_label.setText("MAX " + format_hms(self.max_duration, include_ms=True))
+            self.overview_end_time_label.setText(self._overview_end_text())
             # 位置：右上角，留一點空 (x 靠右但不貼邊)
             delta = max(1.0, self.max_duration * 0.005)
             self.overview_end_time_label.setPos(self.max_duration - delta, 0.95)
@@ -1201,7 +1414,11 @@ class NoxPSGViewer(QMainWindow):
             self._set_overview_xrange()
         if getattr(self, 'overview_region', None):
             self.overview_region.setBounds([0, self.max_duration])
-            self.overview_region.setRegion([self.time_start, self.time_start + self.time_duration])
+            self._updating_view = True
+            try:
+                self.overview_region.setRegion([self.time_start, self.time_start + self.time_duration])
+            finally:
+                self._updating_view = False
 
         # 重置事件篩選（預設不顯示任何 event，包含「在所有通道顯示」）
         # 效能：重置 loaded flag，列表將在 load 後被設為 placeholder
@@ -1240,7 +1457,11 @@ class NoxPSGViewer(QMainWindow):
         # 初始設定概觀軸 region，確保藍色蒙層立即顯示目前視窗位置
         # （time 已在 max_duration 後立即由 _set_initial_fast_time_window 設為 from-0 60s）
         if getattr(self, 'overview_region', None):
-            self.overview_region.setRegion([self.time_start, self.time_start + self.time_duration])
+            self._updating_view = True
+            try:
+                self.overview_region.setRegion([self.time_start, self.time_start + self.time_duration])
+            finally:
+                self._updating_view = False
 
         # PR3: 使用 PatientInfoBanner + ClinicalSummary 取代舊 info_text (從 get_patient_info 填真實臨床資料)
         # 舊技術 meta (name/dur/channels/path) 併入 banner 次要區；device 也由 banner 顯示
@@ -1263,10 +1484,9 @@ class NoxPSGViewer(QMainWindow):
         # PR4: 若此 rec 有儲存的 visible，覆蓋表格 checks 並重建 visible_channels（per-rec override）
         if getattr(self, "prefs", None) and self.current_rec:
             pm = PrefsManager()
-            clinical_default = ["snore", "spo2", "nasal pressure", "thermistor"]
-            saved_vis = pm.load_visible(self.current_rec.name, clinical_default)
+            saved_vis = pm.load_visible(self.current_rec.name, CLINICAL_DEFAULT_CHANNELS)
             if saved_vis is None or len(saved_vis) > 15:  # 避免之前「全選」儲存導致載入卡死
-                saved_vis = clinical_default
+                saved_vis = CLINICAL_DEFAULT_CHANNELS
             self._apply_saved_visible(saved_vis)
 
         # 預設按名稱順序排列通道顯示（含波形順序）
@@ -1371,10 +1591,9 @@ class NoxPSGViewer(QMainWindow):
                         self._add_event_time_overlays()
             except Exception:
                 pass
-            clinical_default = ["snore", "spo2", "nasal pressure", "thermistor"]
-            saved_vis = pm.load_visible(self.current_rec.name, clinical_default)
+            saved_vis = pm.load_visible(self.current_rec.name, CLINICAL_DEFAULT_CHANNELS)
             if saved_vis is None or len(saved_vis) > 15:  # 避免之前「全選」儲存導致載入卡死
-                saved_vis = clinical_default
+                saved_vis = CLINICAL_DEFAULT_CHANNELS
             self._apply_saved_visible(saved_vis)
             pm.load_viz_settings(self.current_rec.name, self._viz_settings)
             # 最後再強制一次初始快取 60s 視窗（覆蓋任何中間可能還原的大 dur），確保 progressive / update 只載少量資料
@@ -1421,9 +1640,8 @@ class NoxPSGViewer(QMainWindow):
         chans = self.current_rec.channels  # list of dicts
         # 清除偏好記錄後的預設：採用 DeepNYX（而非標準PSG），通道預設高度改為 200px
         # 避免全選導致載入過慢；使用者可手動勾選更多或使用預設按鈕
-        clinical_default = ["snore", "spo2", "nasal pressure", "thermistor"]
         for ch in chans:
-            is_checked = ch["name"] in clinical_default
+            is_checked = channel_matches_preset(ch["name"], CLINICAL_DEFAULT_CHANNELS)
             self._create_channel_row(ch, is_checked)
 
         self.channel_table.blockSignals(False)
@@ -1443,8 +1661,8 @@ class NoxPSGViewer(QMainWindow):
         # Interactive 模式仍允許使用者之後手動拖拉表頭欄位變寬/窄。
         try:
             self.channel_table.resizeColumnsToContents()
-            if self.channel_table.columnCount() >= 5:
-                caps = {0: 34, 1: 85, 2: 52, 3: 52, 4: 72}  # 顯示/名稱/fs/單位/樣本數
+            if self.channel_table.columnCount() >= 6:
+                caps = {0: 34, 1: 85, 2: 52, 3: 52, 4: 72, 5: 110}  # 顯示/名稱/fs/單位/樣本數/來源
                 for col, mw in caps.items():
                     if self.channel_table.columnWidth(col) > mw:
                         self.channel_table.setColumnWidth(col, mw)
@@ -1474,16 +1692,12 @@ class NoxPSGViewer(QMainWindow):
                     chk.setChecked(False)
             return
 
-        desired_norm = {d.lower().replace(" ", "") for d in desired}
         for row in range(self.channel_table.rowCount()):
             chk = self.channel_table.cellWidget(row, 0).findChild(QCheckBox)
             if not chk:
                 continue
             name = chk.property("channel_name") or ""
-            if name.lower().replace(" ", "") in desired_norm or name in desired:
-                chk.setChecked(True)
-            else:
-                chk.setChecked(False)
+            chk.setChecked(channel_matches_preset(name, desired))
 
     def _filter_channels(self, text: str):
         """即時過濾通道表格（隱藏不匹配 row），不改變 visible_channels。"""
@@ -1560,12 +1774,16 @@ class NoxPSGViewer(QMainWindow):
         self.channel_table.setItem(row, 2, QTableWidgetItem(f"{ch['fs']:.1f}"))
         self.channel_table.setItem(row, 3, QTableWidgetItem(ch["unit"] or ""))
         self.channel_table.setItem(row, 4, QTableWidgetItem(str(ch["samples"])))
+        source_label = ch.get("source_label") or ""
+        src_item = QTableWidgetItem(source_label)
+        src_item.setToolTip(ch.get("path") or source_label)
+        self.channel_table.setItem(row, 5, src_item)
 
         # PR5 低頻提示（position / fs<5）
         fs_val = ch.get("fs", 0)
         if fs_val < 5 or self.current_rec.is_position_channel(ch_name):
             lowfreq_tip = "低頻通道（fs<5Hz 或 position），使用特殊渲染。"
-            for c in range(5):
+            for c in range(6):
                 item = self.channel_table.item(row, c)
                 if item:
                     item.setToolTip(lowfreq_tip)
@@ -1605,7 +1823,7 @@ class NoxPSGViewer(QMainWindow):
             if ch in data_snapshot:
                 x, y, _fs = data_snapshot[ch]
                 if i < len(getattr(self, 'curves', [])) and self.curves[i] is not None:
-                    self.curves[i].setData(x, y)
+                    self.curves[i].setData(x, y, antialias=self.antialias_on)
                     if i < len(self.plot_items):
                         p = self.plot_items[i]
                         p.setXRange(self.time_start, self.time_start + self.time_duration, padding=0)
@@ -1672,6 +1890,8 @@ class NoxPSGViewer(QMainWindow):
                 return (ch.get("unit") or "").lower()
             if col == 4:  # 樣本數
                 return ch.get("samples", 0)
+            if col == 5:  # 來源
+                return (ch.get("source_label") or "").lower()
             # 其他或無效 col：退回名稱排序
             return name.lower()
 
@@ -1695,8 +1915,8 @@ class NoxPSGViewer(QMainWindow):
         # sort 後也重新壓縮欄寬（保持小 minSize）
         try:
             self.channel_table.resizeColumnsToContents()
-            if self.channel_table.columnCount() >= 5:
-                caps = {0: 34, 1: 85, 2: 52, 3: 52, 4: 72}
+            if self.channel_table.columnCount() >= 6:
+                caps = {0: 34, 1: 85, 2: 52, 3: 52, 4: 72, 5: 110}
                 for col, mw in caps.items():
                     if self.channel_table.columnWidth(col) > mw:
                         self.channel_table.setColumnWidth(col, mw)
@@ -1706,6 +1926,7 @@ class NoxPSGViewer(QMainWindow):
     # ==================== 事件表 ====================
 
     def _populate_events_table(self):
+        self._cancel_event_table_fill()  # 取消任何進行中的分批填表，避免寫入已清空的表
         self.events_table.setRowCount(0)
         if hasattr(self, 'events_note_label') and self.events_note_label:
             self.events_note_label.setText("")
@@ -1746,113 +1967,158 @@ class NoxPSGViewer(QMainWindow):
                 self.events_note_label.setText("")
             return
 
-        # 顯示所有資料，無硬上限。
-        # 但若超過 300 筆 (常見於大型 XLS 分析檔)，表格只顯示前 300 筆以維持效能；
-        # 所有事件仍會用於波形上的黃色/綠色時間標記。注意欄位排序已啟用，邏輯與事件篩選表格一致。
-        MAX_TABLE = 300
-        display_events = events if len(events) <= MAX_TABLE else events[:MAX_TABLE]
+        # 顯示全部事件，無任何硬上限（醫療軟體要求完整呈現）；_NumericTimeItem 以 rel_s 排序。
+        # 大量事件改「分批建列」避免一次建上萬列 + 上萬個跳轉按鈕凍結 UI。
+        # blockSignals(True)/setSortingEnabled(False) 維持到分批完成（_finish_event_table_fill）才釋放。
+        self._evt_total = len(events)
+        self._start_event_table_fill(events)
 
+    # ---- D: 事件表分批建列 ----
+    _EVT_FILL_BATCH = 200  # 每批建列數；小於此值的表一次建完（避免 timer 開銷與閃爍）
+
+    def _cancel_event_table_fill(self):
+        """取消進行中的分批填表（切換選取/重填前呼叫）。"""
+        t = getattr(self, '_evt_fill_timer', None)
+        if t is not None:
+            try:
+                t.stop()
+            except Exception:
+                pass
+            self._evt_fill_timer = None
+        self._evt_fill_events = []
+        self._evt_fill_idx = 0
+
+    def _start_event_table_fill(self, display_events):
         n = len(display_events)
         self.events_table.setRowCount(n)
-        for idx, ev in enumerate(display_events):
-            # 開始 / 結束 / 持續時間 (使用 parsed 的 rel 較一致)
-            rel_s = ev.get("rel_start", None)
-            if rel_s is None:
-                ts = ev.get("starts_at") or ev.get("starts") or 0
-                rel_s = self._filetime_to_relative_seconds(ts)
-            rel_e = ev.get("rel_end", rel_s)
-            if rel_e is None or rel_e < rel_s:
-                rel_e = rel_s
+        self._evt_fill_events = display_events
+        self._evt_fill_idx = 0
+        if n <= self._EVT_FILL_BATCH:
+            self._fill_event_rows(0, n)
+            self._finish_event_table_fill()
+            return
+        # 先同步建第一批（首屏立即可見），其餘交給 timer 分批
+        self._fill_event_rows(0, self._EVT_FILL_BATCH)
+        self._evt_fill_idx = self._EVT_FILL_BATCH
+        self._evt_fill_timer = QTimer(self)
+        self._evt_fill_timer.timeout.connect(self._fill_event_rows_tick)
+        self._evt_fill_timer.start(0)  # 0ms：讓出事件迴圈後立即續建，UI 保持可操作
 
-            start_str = format_hms(rel_s, include_ms=True) if rel_s else "-"
-            has_end_data = self._event_has_meaningful_end(ev)
-            end_str = format_hms(rel_e, include_ms=True) if has_end_data else "-"
-            dur = rel_e - rel_s if has_end_data else 0
-            dur_str = f"{dur:.3f} s" if has_end_data else "-"
+    def _fill_event_rows_tick(self):
+        evs = self._evt_fill_events
+        start = self._evt_fill_idx
+        end = min(start + self._EVT_FILL_BATCH, len(evs))
+        self._fill_event_rows(start, end)
+        self._evt_fill_idx = end
+        if end >= len(evs):
+            if self._evt_fill_timer is not None:
+                self._evt_fill_timer.stop()
+                self._evt_fill_timer = None
+            self._finish_event_table_fill()
 
-            type_ = str(ev.get("type", ""))
-            loc = ev.get('table_position', str(ev.get("location", "")))
-            notes = str(ev.get("notes", ""))
+    def _fill_event_rows(self, start, end):
+        evs = self._evt_fill_events
+        for idx in range(start, end):
+            self._build_event_row(idx, evs[idx])
 
-            remark = f"[{type_}] {notes[:35]}" if type_ else notes[:40]
-            if not remark:
-                remark = type_ or "-"
+    def _build_event_row(self, idx, ev):
+        """建立事件表單一列（供分批填表呼叫）。"""
+        rel_s = ev.get("rel_start", None)
+        if rel_s is None:
+            ts = ev.get("starts_at") or ev.get("starts") or 0
+            rel_s = self._filetime_to_relative_seconds(ts)
+        rel_e = ev.get("rel_end", rel_s)
+        if rel_e is None or rel_e < rel_s:
+            rel_e = rel_s
 
-            is_no_match = ev.get('is_no_match', False) or self._is_unmatched_event(ev)
-            exc_mapped = ev.get('exception_matched_to')
-            if is_no_match:
-                if not remark.startswith("[無法匹配"):
-                    remark = "[無法匹配 channel] " + remark
+        # 事件表時間欄一律顯示絕對牆鐘時間，並以錄音原點(EDF start)為 0 基準排序，
+        # 不受「X軸顯示絕對時間」選單影響；排序鍵用 rel_s（與絕對時間單調一致）。
+        start_str = self._abs_clock_str(rel_s, include_ms=True) if rel_s is not None else "-"
+        has_end_data = self._event_has_meaningful_end(ev)
+        end_str = self._abs_clock_str(rel_e, include_ms=True) if has_end_data else "-"
+        dur = rel_e - rel_s if has_end_data else 0
+        dur_str = f"{dur:.3f} s" if has_end_data else "-"
 
-            # set items , with UserRole numeric for time/dur cols to ensure proper sort
-            # 跳轉欄移到最左 (col 0)，其餘順移
-            btn = QPushButton("→")
-            btn.setProperty("rel_sec", rel_s)
-            btn.clicked.connect(self._jump_from_event_button)
-            self.events_table.setCellWidget(idx, 0, btn)
-            if is_no_match:
-                btn.setStyleSheet("background-color: #ffffcc;")
+        type_ = str(ev.get("type", ""))
+        loc = ev.get('table_position', str(ev.get("location", "")))
+        notes = str(ev.get("notes", ""))
 
-            start_item = QTableWidgetItem(start_str)
-            start_item.setData(Qt.ItemDataRole.UserRole, rel_s)
-            self.events_table.setItem(idx, 1, start_item)
+        remark = f"[{type_}] {notes[:35]}" if type_ else notes[:40]
+        if not remark:
+            remark = type_ or "-"
 
-            end_item = QTableWidgetItem(end_str)
-            end_item.setData(Qt.ItemDataRole.UserRole, rel_e if has_end_data else -1.0)
-            self.events_table.setItem(idx, 2, end_item)
+        is_no_match = ev.get('is_no_match', False) or self._is_unmatched_event(ev)
+        exc_mapped = ev.get('exception_matched_to')
+        if is_no_match:
+            if not remark.startswith("[無法匹配"):
+                remark = "[無法匹配 channel] " + remark
 
-            dur_item = QTableWidgetItem(dur_str)
-            dur_item.setData(Qt.ItemDataRole.UserRole, dur if has_end_data else 0.0)
-            self.events_table.setItem(idx, 3, dur_item)
+        # 跳轉欄移到最左 (col 0)，其餘順移
+        btn = QPushButton("→")
+        btn.setProperty("rel_sec", rel_s)
+        btn.clicked.connect(self._jump_from_event_button)
+        self.events_table.setCellWidget(idx, 0, btn)
+        if is_no_match:
+            btn.setStyleSheet("background-color: #ffffcc;")
 
-            self.events_table.setItem(idx, 4, QTableWidgetItem(loc))
-            remark_item = QTableWidgetItem(remark)
-            self.events_table.setItem(idx, 5, remark_item)
+        # 時間/持續欄用 _NumericTimeItem：以 rel_s（相對原點秒數，跨午夜單調）為排序鍵，
+        # 而非顯示字串，避免「03:00 < 23:55」這種跨午夜字串排序錯誤。
+        start_item = _NumericTimeItem(start_str)
+        start_item.setData(Qt.ItemDataRole.UserRole, rel_s if rel_s is not None else -1.0)
+        self.events_table.setItem(idx, 1, start_item)
 
-            if is_no_match:
-                light_bg = QColor(255, 255, 200)
-                for col in range(6):
-                    it = self.events_table.item(idx, col)
-                    if it:
-                        it.setBackground(light_bg)
-                remark_item.setToolTip("【無法匹配任何 raw data Channel，獨立被記錄的 event】\n" + (remark_item.toolTip() or ""))
-            elif exc_mapped:
-                light_exc = QColor(232, 245, 233)
-                for col in range(6):
-                    it = self.events_table.item(idx, col)
-                    if it:
-                        it.setBackground(light_exc)
+        end_item = _NumericTimeItem(end_str)
+        end_item.setData(Qt.ItemDataRole.UserRole, rel_e if has_end_data else -1.0)
+        self.events_table.setItem(idx, 2, end_item)
 
-            full_tip = (
-                f"開始: {start_str}\n"
-                f"結束: {end_str}\n"
-                f"持續: {dur_str}\n"
-                f"類型: {type_}\n"
-                f"位置 (channel/sensor): {loc}\n"
-                f"備註: {notes or '(無)'}\n"
-                f"原始 starts_at: {ev.get('starts_at', '')}\n"
-                f"原始 ends_at: {ev.get('ends_at', '')}"
-            )
-            if exc_mapped:
-                full_tip = f"【通過例外列表匹配: {exc_mapped}】\n{full_tip}"
-                remark_item.setToolTip(full_tip)
-            else:
-                remark_item.setToolTip(full_tip)
-            for c in [1, 2, 3, 4]:
-                it = self.events_table.item(idx, c)
+        dur_item = _NumericTimeItem(dur_str)
+        dur_item.setData(Qt.ItemDataRole.UserRole, dur if has_end_data else 0.0)
+        self.events_table.setItem(idx, 3, dur_item)
+
+        self.events_table.setItem(idx, 4, QTableWidgetItem(loc))
+        remark_item = QTableWidgetItem(remark)
+        self.events_table.setItem(idx, 5, remark_item)
+
+        if is_no_match:
+            light_bg = QColor(255, 255, 200)
+            for col in range(6):
+                it = self.events_table.item(idx, col)
                 if it:
-                    it.setToolTip(full_tip)
+                    it.setBackground(light_bg)
+            remark_item.setToolTip("【無法匹配任何 raw data Channel，獨立被記錄的 event】\n" + (remark_item.toolTip() or ""))
+        elif exc_mapped:
+            light_exc = QColor(232, 245, 233)
+            for col in range(6):
+                it = self.events_table.item(idx, col)
+                if it:
+                    it.setBackground(light_exc)
 
+        full_tip = (
+            f"開始: {start_str}\n"
+            f"結束: {end_str}\n"
+            f"持續: {dur_str}\n"
+            f"類型: {type_}\n"
+            f"名稱 (channel/sensor): {loc}\n"
+            f"備註: {notes or '(無)'}\n"
+            f"原始 starts_at: {ev.get('starts_at', '')}\n"
+            f"原始 ends_at: {ev.get('ends_at', '')}"
+        )
+        if exc_mapped:
+            full_tip = f"【通過例外列表匹配: {exc_mapped}】\n{full_tip}"
+        remark_item.setToolTip(full_tip)
+        for c in [1, 2, 3, 4]:
+            it = self.events_table.item(idx, c)
+            if it:
+                it.setToolTip(full_tip)
+
+    def _finish_event_table_fill(self):
+        """分批填表完成：釋放 signals、恢復排序、欄寬與標題標籤。"""
         self.events_table.blockSignals(False)
         self.events_table.setSortingEnabled(True)
         self.events_table.horizontalHeader().setSortIndicator(1, Qt.SortOrder.AscendingOrder)
 
-        if len(events) > MAX_TABLE:
-            if hasattr(self, 'events_note_label') and self.events_note_label:
-                self.events_note_label.setText(f"... 還有 {len(events) - MAX_TABLE} 筆事件（主要來自 XLS 分析檔），已全部用於波形時間軸的黃色/綠色標記")
-        else:
-            if hasattr(self, 'events_note_label') and self.events_note_label:
-                self.events_note_label.setText("")
+        if hasattr(self, 'events_note_label') and self.events_note_label:
+            self.events_note_label.setText("")
 
         # 讓時間相關欄位根據當前資料內容自動設定合理初始寬度...
         try:
@@ -1868,7 +2134,7 @@ class NoxPSGViewer(QMainWindow):
         except Exception:
             pass
 
-        label = f"事件標記 - 共 {len(events)} 筆"
+        label = f"事件標記 - 共 {self._evt_total} 筆"
         if hasattr(self, 'chk_display_all_channels') and self.chk_display_all_channels and self.chk_display_all_channels.isChecked():
             label += "（含所有通道）"
         self.events_label.setText(label)
@@ -2020,7 +2286,13 @@ class NoxPSGViewer(QMainWindow):
             if len(left_label) > 12:
                 left_label = left_label[:10] + "…"
             p.setLabel("left", left_label, **{'offset': (0, 0)})
-            # 左軸寬度已固定為 65，波形顯示區域寬度統一
+            # 左軸寬度已固定為 65，波形顯示區域寬度統一。
+            # 標籤受版面寬度截斷時，hover 左軸可看到完整通道名稱（醫療辨識需求，避免名稱看不全）。
+            try:
+                left_axis = p.getAxis("left")
+                left_axis.setToolTip(ch_name)
+            except Exception:
+                pass
 
             p.setMenuEnabled(False)  # 移除預設 UI 裝飾，減少左上角重疊
 
@@ -2050,6 +2322,13 @@ class NoxPSGViewer(QMainWindow):
             else:
                 # 固定預設樣式（已取消樣式編輯功能）
                 curve = p.plot(pen=pg.mkPen(color='#1f77b4', width=1.0))
+                # 效能：peak 降採樣 + clipToView。大視窗（Fit 全長 = 數百萬點）時只繪製
+                # 可視範圍、且以每像素 min/max 抽稀 → 速度大增且「不漏任何 spike」（醫療要求）。
+                try:
+                    curve.setDownsampling(auto=True, method='peak')
+                    curve.setClipToView(True)
+                except Exception:
+                    pass
                 self.curves.append(curve)
                 self.position_renderers[i] = None
                 self.plot_items.append(p)
@@ -2141,6 +2420,33 @@ class NoxPSGViewer(QMainWindow):
         if n > 0:
             self.statusBar().showMessage(f"正在載入通道 0/{n} ...", 0)
 
+    def _read_channel_window(self, ch, t0, dur, strip_header=True):
+        """讀取通道在「全域時間窗 [t0, t0+dur]」的資料，並套用該通道的絕對起始 offset。
+
+        各 NDF 通道因感測器分批上線，第一筆 sample 的牆鐘時間不同（D20 實測 spread 達 118s）。
+        此處把全域時間換算成 channel-local 秒數讀取，再回報資料第一筆對應的全域 x（x0），
+        讓波形擺在絕對時間軸的正確位置；offset=0（EDF 來源 / 無嵌入時間）時行為與舊版完全一致。
+
+        回傳 (data, fs, x0)：x0 = max(t0, offset)，即資料第一筆的全域秒數。
+        若整個視窗落在通道起始之前，回傳空資料。
+        """
+        rec = self.current_rec
+        try:
+            offset = float(rec.channel_offset_sec(ch))
+        except Exception:
+            offset = 0.0
+        local_t0 = t0 - offset
+        read_t0 = local_t0 if local_t0 > 0 else 0.0
+        read_dur = dur - (read_t0 - local_t0)  # 視窗前緣若早於通道起始則縮短
+        if read_dur <= 0:
+            return np.array([]), 1.0, t0
+        try:
+            data, fs = rec.get_data(ch, read_t0, read_dur, strip_header=strip_header)
+        except Exception:
+            return np.array([]), 1.0, t0
+        x0 = read_t0 + offset  # = max(t0, offset)
+        return data, fs, x0
+
     def _load_next_data_batch(self):
         """每批載入 BATCH_SIZE 個通道的資料（get_data + 設定 curve / renderer）。"""
         if not self.current_rec or not getattr(self, 'visible_channels', None):
@@ -2161,14 +2467,13 @@ class NoxPSGViewer(QMainWindow):
         for i in range(self._prog_index, end):
             ch = self.visible_channels[i]
             try:
-                data, fs = self.current_rec.get_data(
-                    ch, self.time_start, self.time_duration, strip_header=True
-                )
+                data, fs, x0 = self._read_channel_window(ch, self.time_start, self.time_duration)
             except Exception:
                 data = np.array([])
                 fs = 1.0
+                x0 = self.time_start
 
-            # 與 _perform 一致的 per-channel 實際 dur 處理
+            # per-channel 實際 dur + 絕對起始 offset → 通道全域結束 = offset + ch_dur
             ch_dur = self.max_duration
             try:
                 for c in (getattr(self.current_rec, 'channels', None) or []):
@@ -2177,20 +2482,24 @@ class NoxPSGViewer(QMainWindow):
                         break
             except Exception:
                 pass
+            try:
+                ch_global_end = float(self.current_rec.channel_offset_sec(ch)) + ch_dur
+            except Exception:
+                ch_global_end = ch_dur
 
             if len(data) == 0:
                 x = np.array([])
                 y = np.array([])  # 無資料時 empty，避免畫 flat 0 線
             else:
                 got_dur = len(data) / max(fs or 1.0, 1e-9)
-                got_end = self.time_start + got_dur
-                if got_end > ch_dur + 0.1:
-                    keep_n = max(0, int( (ch_dur - self.time_start) * (fs or 1.0) ))
+                got_end = x0 + got_dur
+                if got_end > ch_global_end + 0.1:
+                    keep_n = max(0, int( (ch_global_end - x0) * (fs or 1.0) ))
                     data = data[:keep_n]
                     got_dur = len(data) / max(fs or 1.0, 1e-9) if len(data) > 0 else 0.0
-                x = np.linspace(self.time_start, self.time_start + got_dur, len(data), endpoint=False) if len(data) > 0 else np.array([])
+                x = np.linspace(x0, x0 + got_dur, len(data), endpoint=False) if len(data) > 0 else np.array([])
                 y = data
-                if "spo2" in ch.lower():
+                if "spo2" in ch.lower() and np.nanmax(np.abs(y)) > 200:
                     y = y / 10.0
                 # 清理 inf/nan (snore 等可能有極端值)
                 y = np.asarray(y, dtype=float)
@@ -2199,9 +2508,9 @@ class NoxPSGViewer(QMainWindow):
             # 設定資料（position 用 renderer，其餘用 curve）
             if (getattr(self, 'position_renderers', None) and
                     i in self.position_renderers and self.position_renderers.get(i)):
-                self.position_renderers[i].update(x, y, fs, self.time_start)
+                self.position_renderers[i].update(x, y, fs, x0)
             elif i < len(getattr(self, 'curves', [])) and self.curves[i] is not None:
-                self.curves[i].setData(x, y)
+                self.curves[i].setData(x, y, antialias=self.antialias_on)
                 # 當點數少（放大或稀疏資料）時顯示點標記，讓資料點可見；專業軟體常見做法，避免放大後資料「不見」
                 if len(y) > 0 and len(y) < 300:
                     self.curves[i].setSymbol('o')
@@ -2306,24 +2615,26 @@ class NoxPSGViewer(QMainWindow):
             except ValueError:
                 continue
             try:
-                data, fs = self.current_rec.get_data(ch, self.time_start, self.time_duration, strip_header=True)
+                data, fs, x0 = self._read_channel_window(ch, self.time_start, self.time_duration)
             except Exception:
                 data = np.array([])
                 fs = 1.0
+                x0 = self.time_start
             if len(data) == 0:
                 x = np.array([])
                 y = np.array([])  # 無資料時 empty，避免畫 flat 0 線
             else:
-                x = np.linspace(self.time_start, self.time_start + self.time_duration, len(data), endpoint=False)
+                got_dur = len(data) / max(fs or 1.0, 1e-9)
+                x = np.linspace(x0, x0 + got_dur, len(data), endpoint=False)
                 y = data
-                if "spo2" in ch.lower():
+                if "spo2" in ch.lower() and np.nanmax(np.abs(y)) > 200:
                     y = y / 10.0  # 使 SpO2 數據範圍對應 % (約 0-100)，以匹配 label 與無資料時的 y-range，避免顯示 scale 異常
 
             if (getattr(self, 'position_renderers', None) and
                     i in self.position_renderers and self.position_renderers.get(i)):
-                self.position_renderers[i].update(x, y, fs, self.time_start)
+                self.position_renderers[i].update(x, y, fs, x0)
             elif i < len(getattr(self, 'curves', [])) and self.curves[i] is not None:
-                self.curves[i].setData(x, y)
+                self.curves[i].setData(x, y, antialias=self.antialias_on)
                 # 當點數少（放大或稀疏資料）時顯示點標記，讓資料點可見；專業軟體常見做法，避免放大後資料「不見」
                 if len(y) > 0 and len(y) < 300:
                     self.curves[i].setSymbol('o')
@@ -2389,12 +2700,14 @@ class NoxPSGViewer(QMainWindow):
             for i in range(min(n, len(self.plot_items))):
                 ch = self.visible_channels[i]
                 try:
-                    data, fs = self.current_rec.get_data(ch, self.time_start, self.time_duration, strip_header=True)
+                    data, fs, x0 = self._read_channel_window(ch, self.time_start, self.time_duration)
                 except Exception:
                     data = np.array([])
                     fs = 1.0
+                    x0 = self.time_start
 
-                # 取得此通道的實際資料長度（重要：部分通道如 oximeter 衍生可能短於總長，或因舊 header 解析曾誤報；現在依 ch_index 正確 duration 決定）
+                # 取得此通道的實際資料長度（重要：部分通道如 oximeter 衍生可能短於總長）
+                # 並加上絕對起始 offset → 通道全域結束 = offset + ch_dur
                 ch_dur = self.max_duration
                 try:
                     for c in (getattr(self.current_rec, 'channels', None) or []):
@@ -2403,17 +2716,20 @@ class NoxPSGViewer(QMainWindow):
                             break
                 except Exception:
                     pass
+                try:
+                    ch_global_end = float(self.current_rec.channel_offset_sec(ch)) + ch_dur
+                except Exception:
+                    ch_global_end = ch_dur
 
-                view_end = self.time_start + self.time_duration
                 if len(data) > 0:
                     got_dur = len(data) / max(fs or 1.0, 1e-9)
-                    got_end = self.time_start + got_dur
-                    # trim 到通道實際可得範圍，避免 reader 回傳超出或我們拉伸
-                    if got_end > ch_dur + 0.1:
-                        keep_n = max(0, int( (ch_dur - self.time_start) * (fs or 1.0) ))
+                    got_end = x0 + got_dur
+                    # trim 到通道實際可得範圍（以全域結束為界），避免 reader 回傳超出或我們拉伸
+                    if got_end > ch_global_end + 0.1:
+                        keep_n = max(0, int( (ch_global_end - x0) * (fs or 1.0) ))
                         data = data[:keep_n]
                         got_dur = len(data) / max(fs or 1.0, 1e-9) if len(data) > 0 else 0.0
-                    x = np.linspace(self.time_start, self.time_start + got_dur, len(data), endpoint=False) if len(data) > 0 else np.array([])
+                    x = np.linspace(x0, x0 + got_dur, len(data), endpoint=False) if len(data) > 0 else np.array([])
                     y = data
                     if "spo2" in ch.lower():
                         y = y / 10.0
@@ -2429,9 +2745,9 @@ class NoxPSGViewer(QMainWindow):
 
                 # PR2: position 用 renderer (windowed step/fill/labels)；其他維持原 line
                 if i in getattr(self, 'position_renderers', {}) and self.position_renderers.get(i):
-                    self.position_renderers[i].update(x, y, fs, self.time_start)
+                    self.position_renderers[i].update(x, y, fs, x0)
                 elif i < len(self.curves) and self.curves[i] is not None:
-                    self.curves[i].setData(x, y)
+                    self.curves[i].setData(x, y, antialias=self.antialias_on)
                     # 當點數少（放大或稀疏資料）時顯示點標記，讓資料點可見；專業軟體常見做法，避免放大後資料「不見」
                     if len(y) > 0 and len(y) < 300:
                         self.curves[i].setSymbol('o')
@@ -2486,7 +2802,7 @@ class NoxPSGViewer(QMainWindow):
                         # 不設 curve data (上面已確保 empty)，只保留軸與 grid，讓用戶知道這個 channel 在此時段無波形
                         # 必要時可在此加 p.addItem( TextItem("無此時段資料", color='r', anchor=(0.5,0.5)) ) 但先以正確 range 為主
 
-                # (事件 markers 為固定時間的 per-channel 項目，無需每 update 重設位置；cursor 可由 overview 提供)
+                # (事件 markers 採可視範圍渲染，於下方依目前視窗重繪)
 
             # 更新 overview region (淡藍色蒙層) + 目前位置紅線
             # 確保與下方詳細波形的時間視窗完全同步
@@ -2498,6 +2814,14 @@ class NoxPSGViewer(QMainWindow):
                     p.setXRange(self.time_start, self.time_start + self.time_duration, padding=0)
                 self.overview_plot.setYRange(0, 1, padding=0)
             self._refresh_all_time_axes()
+
+            # 可視範圍事件標記：依目前視窗重繪（只畫視窗內標記，大量事件時平移仍順）。
+            # 事件表不受影響仍顯示全部。
+            if getattr(self, '_events_loaded', False) and getattr(self, 'selected_event_channels', None):
+                self._clear_event_visuals()
+                self._add_event_markers_to_plots()
+                if getattr(self, 'show_event_background_overlay', False):
+                    self._add_event_time_overlays()
 
         finally:
             self._updating_view = False
@@ -2562,20 +2886,26 @@ class NoxPSGViewer(QMainWindow):
     def _update_overview_region(self):
         """確保藍色蒙層和紅線永遠正確反映目前時間視窗，並鎖定概觀軸全寬度。
         調用此函式在所有時間改變處，保證顯示。
+        使用 _updating_view flag 防止 setRegion 觸發 sigRegionChanged 導致遞迴。
         """
-        if self.overview_region:
+        if not self.overview_region:
+            return
+        self._updating_view = True
+        try:
             self.overview_region.setRegion([self.time_start, self.time_start + self.time_duration])
             self.overview_region.setVisible(True)
             try:
                 self.overview_region.update()
             except Exception:
                 pass
+        finally:
+            self._updating_view = False
         if hasattr(self, 'overview_vline'):
             self.overview_vline.setValue(self.time_start + self.time_duration / 2)
         if self.overview_plot and getattr(self, 'max_duration', 0):
             self._set_overview_xrange()
             if hasattr(self, 'overview_end_time_label'):
-                self.overview_end_time_label.setText("MAX " + format_hms(self.max_duration, include_ms=True))
+                self.overview_end_time_label.setText(self._overview_end_text())
                 delta = max(1.0, self.max_duration * 0.005)
                 self.overview_end_time_label.setPos(self.max_duration - delta, 0.95)
             try:
@@ -2599,26 +2929,24 @@ class NoxPSGViewer(QMainWindow):
                     pass
 
     def _get_robust_y_limits(self, y, ch_name: str = ""):
-        """計算穩健的 y 範圍。
-        - 對 snore / 類似大幅度事件通道：使用實際 min/max + 小 pad，確保資料不會視覺「超出畫面」。
-        - 對其他通道：使用 0.2/99.8 percentile + pad，避免單一 spike 毀掉正常顯示。
-        所有路徑先做 inf/nan 清理。
+        """計算 y 顯示範圍。
+        醫療軟體要求完整呈現：全通道一律使用實際 min/max + 小 pad，
+        確保任何 spike（含臨床上重要的尖峰）都完整入畫，不做百分位裁切。
+        先做 inf/nan 清理。
         """
         yarr = np.asarray(y, dtype=float)
         yarr = yarr[np.isfinite(yarr)]
         if len(yarr) == 0:
             return -1.0, 1.0
+        ymin = float(np.min(yarr))
+        ymax = float(np.max(yarr))
+        dy = ymax - ymin
+        # snore / audio 大幅度通道沿用較小 pad；其餘給稍大 pad 留呼吸空間
         ch_lower = ch_name.lower()
         if "snore" in ch_lower or "audio" in ch_lower:
-            ymin = float(np.min(yarr))
-            ymax = float(np.max(yarr))
-            dy = ymax - ymin
             pad = dy * 0.05 if dy > 0 else 10.0
         else:
-            ymin = float(np.percentile(yarr, 0.2))
-            ymax = float(np.percentile(yarr, 99.8))
-            dy = ymax - ymin
-            pad = dy * 0.12 if dy > 0 else 0.5
+            pad = dy * 0.08 if dy > 0 else 0.5
         return ymin - pad, ymax + pad
 
     def _set_initial_fast_time_window(self):
@@ -2668,14 +2996,16 @@ class NoxPSGViewer(QMainWindow):
             self.pos_slider.blockSignals(True)
             self.start_spin.setMaximum(self.max_duration)
             self.start_spin.setValue(self.time_start)
-            self.dur_spin.setMaximum(self.max_duration)
-            self.dur_spin.setValue(min(self.time_duration, self.max_duration))
+            if self.max_duration > 0:
+                self.dur_spin.setMaximum(self.max_duration)
+            self.dur_spin.setValue(min(self.time_duration, self.max_duration or 60.0))
             pos = int((self.time_start / max(1, self.max_duration - self.time_duration)) * 1000) if self.max_duration > self.time_duration else 0
             self.pos_slider.setValue(max(0, min(1000, pos)))
             end_t = self.time_start + self.time_duration
             self.time_label.setText(
-                f"視窗: {format_time_label(self.time_start)} - {format_time_label(end_t)}   / 總長 {format_time_label(self.max_duration)}"
+                f"視窗: {self._fmt_time_pos(self.time_start, include_ms=False)} - {self._fmt_time_pos(end_t, include_ms=False)}   / 總長 {format_time_label(self.max_duration)}"
             )
+            self._update_abs_time_edits()
         finally:
             self.start_spin.blockSignals(False)
             self.dur_spin.blockSignals(False)
@@ -2736,19 +3066,17 @@ class NoxPSGViewer(QMainWindow):
         if not self.channel_table:
             return
 
-        clinical_default = ["snore", "spo2", "nasal pressure", "thermistor"]
         if not saved or len(saved) > 15:
-            saved = clinical_default
+            saved = CLINICAL_DEFAULT_CHANNELS
 
         self.channel_table.blockSignals(True)
-        desired = set(saved)
         for row in range(self.channel_table.rowCount()):
             chk_w = self.channel_table.cellWidget(row, 0)
             if chk_w:
                 chk = chk_w.findChild(QCheckBox)
                 if chk:
                     name = chk.property("channel_name") or ""
-                    chk.setChecked(name in desired)
+                    chk.setChecked(channel_matches_preset(name, saved))
         self.channel_table.blockSignals(False)
         # 重建 visible 列表（類似 _populate 結尾邏輯）
         self.visible_channels = []
@@ -2903,16 +3231,47 @@ class NoxPSGViewer(QMainWindow):
         selected = getattr(self, 'selected_event_channels', set())
         if not selected:
             return []
+        parsed = getattr(self, 'parsed_events', [])
+        # 記憶化：C（可視範圍標記）讓本函式於每次平移被呼叫，避免每次重掃上萬筆。
+        # key 隨選取集合 / parsed_events 物件或長度變動而失效。
+        cache_key = (frozenset(selected), id(parsed), len(parsed))
+        cache = getattr(self, '_filtered_events_cache', None)
+        if cache is not None and cache[0] == cache_key:
+            return cache[1]
         filtered = []
         seen = set()
-        for ev in getattr(self, 'parsed_events', []):
+        for ev in parsed:
             dc = ev.get('display_channel')
             if dc and dc in selected:
                 key = (ev.get('rel_start'), ev.get('type'), ev.get('location', ''))
                 if key not in seen:
                     filtered.append(ev)
                     seen.add(key)
+        self._filtered_events_cache = (cache_key, filtered)
         return filtered
+
+    def _events_in_view(self, events):
+        """只保留與目前時間視窗相交的事件（含一個窗寬邊距），供波形標記/蒙層的可視範圍渲染。
+        事件表仍顯示全部；此處只是減少 scene 上的 Qt 物件數，讓平移/縮放更順。
+        平移/縮放停頓後由 _perform_update_view 觸發重繪，邊距確保邊緣標記已就緒。
+        """
+        md = getattr(self, 'max_duration', 0) or 0
+        if not md or not events:
+            return events
+        vs = self.time_start
+        ve = self.time_start + self.time_duration
+        margin = self.time_duration  # 視窗外保留一個窗寬
+        lo, hi = vs - margin, ve + margin
+        out = []
+        for ev in events:
+            rs = ev.get('rel_start')
+            if rs is None:
+                continue
+            re_ = ev.get('rel_end')
+            end = re_ if re_ is not None else rs
+            if end >= lo and rs <= hi:
+                out.append(ev)
+        return out
 
     def _clear_event_visuals(self):
         """清除目前波形上的事件標記與蒙層（含文字標籤）。"""
@@ -2979,7 +3338,7 @@ class NoxPSGViewer(QMainWindow):
 
         # 概觀軸右上角結束時間數字（使用 TextItem 在相同 plot container，字體與通道 x 軸一致，總是完整 ms，顯示在最前面）
         if hasattr(self, 'overview_end_time_label') and getattr(self, 'max_duration', 0) > 0:
-            self.overview_end_time_label.setText("MAX " + format_hms(self.max_duration, include_ms=True))
+            self.overview_end_time_label.setText(self._overview_end_text())
             delta = max(1.0, self.max_duration * 0.005)
             self.overview_end_time_label.setPos(self.max_duration - delta, 0.95)
 
@@ -2991,13 +3350,24 @@ class NoxPSGViewer(QMainWindow):
         else:
             self._clear_event_overlays()
 
+    def _on_toggle_antialias(self, checked):
+        """切換波形抗鋸齒。關閉可在密集波形/大量通道時明顯加速繪製。
+        即時套用：更新全域設定（供新建曲線）+ 重繪目前曲線（setData 會帶入新的 antialias）。
+        """
+        self.antialias_on = bool(checked)
+        try:
+            pg.setConfigOptions(antialias=self.antialias_on)
+        except Exception:
+            pass
+        # 立即重繪：_perform_update_view 的 setData 會帶入 antialias=self.antialias_on
+        self._update_view(immediate=True)
+
     def _on_toggle_event_text_labels(self, checked):
         """切換事件 marker 上的小文字標籤顯示（type @ location）。
         預設關閉，避免畫面太亂。放在檢視選單「事件預設背景蒙層」下方。
         """
         self.show_event_text_labels = bool(checked)
-        # 為求簡單可靠，直接清掉所有事件視覺元素後重繪（線條+條件式標籤+蒙層）
-        # 事件數量已上限 500，重繪成本低。
+        # 為求簡單可靠，直接清掉所有事件視覺元素後重繪（線條+條件式標籤+蒙層）。
         self._clear_event_visuals()
         if getattr(self, '_events_loaded', False) and getattr(self, 'selected_event_channels', None):
             self._add_event_markers_to_plots()
@@ -3027,12 +3397,30 @@ class NoxPSGViewer(QMainWindow):
 
     def _on_toggle_show_ms(self, checked):
         self.x_axis_show_milliseconds = bool(checked)
+        self._relabel_time_axes()
+
+    def _on_toggle_absolute_time(self, checked):
+        """切換 X 軸絕對牆鐘時間 / 相對經過時間。只改顯示文字，不影響資料座標與 event 位置（rel_start 不變）。"""
+        self.x_axis_absolute_time = bool(checked)
+        self._relabel_time_axes()
+        # 同步刷新文字型時間顯示（狀態列視窗範圍、事件表格起訖欄）以對應新模式
+        try:
+            self._update_time_controls()
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'events_table', None) is not None and getattr(self, '_events_loaded', False):
+                self._populate_events_table()
+        except Exception:
+            pass
+
+    def _relabel_time_axes(self):
+        """強制所有詳細通道底部 X 軸與概觀軸重算 tickStrings（標籤刷新，tick 間隔與資料座標不變）。"""
         self._refresh_all_time_axes()
         for p in getattr(self, 'plot_items', []) or []:
             if p:
                 try:
                     ax = p.getAxis('bottom')
-                    # force regenerate axis picture so tickStrings is re-evaluated with new flags
                     if hasattr(ax, 'picture'):
                         ax.picture = None
                     ax.update()
@@ -3041,9 +3429,145 @@ class NoxPSGViewer(QMainWindow):
                     pass
         if getattr(self, 'overview_plot', None):
             try:
+                ax = self.overview_plot.getAxis('bottom')
+                if ax is not None and hasattr(ax, 'picture'):
+                    ax.picture = None
                 self.overview_plot.update()
             except Exception:
                 pass
+
+    def _overview_end_text(self):
+        """概觀軸右端標籤：絕對模式顯示結束牆鐘時間（origin + 總長），否則顯示總長度（MAX）。"""
+        absolute = getattr(self, 'x_axis_absolute_time', False)
+        rec = getattr(self, 'current_rec', None)
+        origin = getattr(rec, 'start_datetime', None) if rec is not None else None
+        if absolute and origin is not None:
+            return "迄 " + self._fmt_time_pos(self.max_duration, include_ms=True)
+        return "MAX " + format_hms(self.max_duration, include_ms=True)
+
+    def _fmt_time_pos(self, sec, include_ms=True):
+        """格式化一個『時間位置』（秒，相對全域原點）供文字顯示，與 X 軸標籤模式一致：
+        絕對模式 → 牆鐘時間(origin + sec)；否則 → 自 0 起的相對經過時間。
+        注意：這是給『時間點』用的；『時長/duration』請仍用 format_hms（長度無絕對形式）。"""
+        if sec is None:
+            sec = 0.0
+        if getattr(self, 'x_axis_absolute_time', False):
+            rec = getattr(self, 'current_rec', None)
+            origin = getattr(rec, 'start_datetime', None) if rec is not None else None
+            if origin is not None:
+                t = origin + timedelta(seconds=float(sec))
+                s = t.strftime('%H:%M:%S')
+                if include_ms:
+                    s += f".{int(t.microsecond / 1000):03d}"
+                return s
+        return format_hms(sec, include_ms=include_ms)
+
+    def _abs_clock_str(self, sec, include_ms=False):
+        """把『相對全域原點的秒數』格式化為**永遠絕對**的牆鐘 hh:mm:ss。
+        與 _fmt_time_pos 不同：此函式不看 x_axis_absolute_time 開關，恆顯示牆鐘時間，
+        供時間視窗的絕對時間輸入框與右下角事件表使用。無 origin（罕見）才退回相對經過時間。"""
+        rec = getattr(self, 'current_rec', None)
+        origin = getattr(rec, 'start_datetime', None) if rec is not None else None
+        if origin is not None:
+            t = origin + timedelta(seconds=float(sec or 0.0))
+            s = t.strftime('%H:%M:%S')
+            if include_ms:
+                s += f".{int(t.microsecond / 1000):03d}"
+            return s
+        return format_hms(sec, include_ms=include_ms)
+
+    @staticmethod
+    def _parse_hms(text):
+        """解析 'hh:mm:ss' 或 'hh:mm:ss.mmm'，回傳當日秒數（0~86400）；格式無效回 None。"""
+        if not text:
+            return None
+        parts = str(text).strip().split(':')
+        if len(parts) != 3:
+            return None
+        try:
+            h = int(parts[0])
+            m = int(parts[1])
+            s = float(parts[2])
+        except (ValueError, TypeError):
+            return None
+        if not (0 <= h < 24 and 0 <= m < 60 and 0 <= s < 60):
+            return None
+        return h * 3600 + m * 60 + s
+
+    def _abs_text_to_rel(self, text):
+        """把使用者輸入的牆鐘 hh:mm:ss 轉成『相對全域原點的秒數』。
+        無 origin 時視為相對經過時間（輸入即相對秒）。跨午夜：取落在原點之後的解。
+        回傳 None 表示輸入格式無效。"""
+        secs = self._parse_hms(text)
+        if secs is None:
+            return None
+        rec = getattr(self, 'current_rec', None)
+        origin = getattr(rec, 'start_datetime', None) if rec is not None else None
+        if origin is None:
+            return secs
+        origin_sod = (origin.hour * 3600 + origin.minute * 60
+                      + origin.second + origin.microsecond / 1e6)
+        rel = secs - origin_sod
+        # 錄音可能跨午夜：輸入時間若在原點當日秒數之前，視為隔天，往後補整天
+        while rel < -0.0005:
+            rel += 86400.0
+        return rel
+
+    def _update_abs_time_edits(self):
+        """把目前視窗起訖同步到絕對時間輸入框（顯示牆鐘 hh:mm:ss）。由 _update_time_controls 呼叫。"""
+        if not hasattr(self, 'abs_start_edit'):
+            return
+        self.abs_start_edit.blockSignals(True)
+        self.abs_end_edit.blockSignals(True)
+        try:
+            end_t = self.time_start + self.time_duration
+            self.abs_start_edit.setText(self._abs_clock_str(self.time_start, include_ms=False))
+            self.abs_end_edit.setText(self._abs_clock_str(end_t, include_ms=False))
+        finally:
+            self.abs_start_edit.blockSignals(False)
+            self.abs_end_edit.blockSignals(False)
+
+    def _on_abs_start_edited(self):
+        """編輯絕對時間起點：平移視窗到該牆鐘時間，保持視窗長度。"""
+        if getattr(self, '_updating_view', False) or not getattr(self, 'max_duration', 0):
+            return
+        sec = self._abs_text_to_rel(self.abs_start_edit.text())
+        if sec is None:
+            self._update_abs_time_edits()  # 格式無效：還原顯示
+            return
+        new_start = max(0.0, min(sec, self.max_duration - self.time_duration))
+        if abs(new_start - self.time_start) < 1e-6:
+            self._update_abs_time_edits()  # 無變化（或已被 clamp 回原值）：還原顯示
+            return
+        self.time_start = new_start
+        self._update_overview_region()
+        self._update_time_controls()
+        self._update_view()
+        if not getattr(self, '_loading_rec', False):
+            self._save_time_for_current()
+
+    def _on_abs_end_edited(self):
+        """編輯絕對時間終點：固定起點，調整視窗長度到該牆鐘時間。"""
+        if getattr(self, '_updating_view', False) or not getattr(self, 'max_duration', 0):
+            return
+        sec = self._abs_text_to_rel(self.abs_end_edit.text())
+        if sec is None:
+            self._update_abs_time_edits()  # 格式無效：還原顯示
+            return
+        new_dur = sec - self.time_start
+        if new_dur <= 0:
+            self._update_abs_time_edits()  # 終點不在起點之後：無效，還原顯示
+            return
+        new_dur = min(new_dur, self.max_duration - self.time_start)
+        if abs(new_dur - self.time_duration) < 1e-6:
+            self._update_abs_time_edits()
+            return
+        self.time_duration = new_dur
+        self._update_overview_region()
+        self._update_time_controls()
+        self._update_view()
+        if not getattr(self, '_loading_rec', False):
+            self._save_time_for_current()
 
     def _refresh_event_displays(self):
         """選取改變時刷新表格與視覺標記。
@@ -3688,9 +4212,8 @@ class NoxPSGViewer(QMainWindow):
             return
         if not getattr(self, 'parsed_events', None) or not self.plot_items:
             return
-        to_overlay = self._get_filtered_events()
-        if len(to_overlay) > 500:
-            to_overlay = to_overlay[:500]
+        # 繪製所有已選通道的事件蒙層（不再截斷）。
+        to_overlay = self._events_in_view(self._get_filtered_events())
         show_all = bool(
             hasattr(self, 'chk_display_all_channels') and
             self.chk_display_all_channels and
@@ -4156,9 +4679,10 @@ class NoxPSGViewer(QMainWindow):
         self.event_label_items = []
         if not getattr(self, 'parsed_events', None) or not self.plot_items or not self.visible_channels:
             return
-        to_mark = self._get_filtered_events()
-        if len(to_mark) > 500:
-            to_mark = to_mark[:500]
+        # 繪製所有已選通道的事件標記（不再截斷）；數量由使用者勾選的通道決定。
+        # 只繪製目前視窗（含一個窗寬邊距）內的標記，平移時由 _perform_update_view 刷新。
+        # 事件表仍顯示全部；此處僅減少 scene 上 Qt 物件數，大幅加速平移/縮放。
+        to_mark = self._events_in_view(self._get_filtered_events())
         show_all = bool(
             hasattr(self, 'chk_display_all_channels') and
             self.chk_display_all_channels and
@@ -4211,7 +4735,7 @@ class NoxPSGViewer(QMainWindow):
                     # 預設只在對應 ch 畫綠色 start line；有 end 才畫 region。
                     # show_all 時也畫在其他 ch，讓目前已選項的時間點在所有通道可見。
                     color = "#27ae60"
-                    width = 1.8
+                    width = 1.0
                     style = Qt.PenStyle.DashLine
                     line = pg.InfiniteLine(pos=rs, angle=90, pen=pg.mkPen(color, width=width, style=style))
                     p.addItem(line)
@@ -4252,15 +4776,17 @@ class NoxPSGViewer(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setOrganizationName("NoxPSG")
-    app.setApplicationName("NoxPSGViewer")
+    app.setOrganizationName("PSG")
+    app.setApplicationName("PSGviewer")
     app.setStyle("Fusion")  # 乾淨現代風格
 
-    viewer = NoxPSGViewer()
+    viewer = PSGViewer()
     viewer.show()
 
-    # 啟動時不再自動載入 "input"（避免在無資料或打包後環境自動跳錯誤對話框）
-    # 使用者必須主動點擊「開啟資料夾」才會嘗試載入，並只在明確選擇無效資料夾時才顯示錯誤。
+    # 啟動時自動嘗試載入專案 input/；無資料時靜默顯示空白，不跳錯誤對話框
+    input_dir = Path(__file__).resolve().parent / "input"
+    QTimer.singleShot(0, lambda: viewer._load_folder(input_dir, show_error=False))
+
     sys.exit(app.exec())
 
 

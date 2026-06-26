@@ -147,8 +147,8 @@ print("已產生標準 EDF：", out_file)
 - **Polyman**：適合手動睡眠評分 + 影片同步。
 - **Noxturnal** (官方 Nox 軟體)：可自訂 Signal Sheets / Workspace Layouts、自動分析即時顯示、熱鍵、事件整合、報告產生。我們的 UI 設計大量參考這兩個工具的交互模式與「結構性臨床資料展示」。
 
-### 視覺化界面特點（NoxPSG Viewer）
-執行 `python noxpsg_viewer.py` 即可啟動（已自動嘗試載入 input/）。
+### 視覺化界面特點（PSG Viewer）
+執行 `python psg_viewer.py` 即可啟動（已自動嘗試載入 input/）。
 
 **結構性、嚴謹、完整展示**：
 - **研究概覽區**：病患 ID、總時長、開始時間、裝置序號 (來自 DEVICE.INI)、通道數、資料路徑。
@@ -183,8 +183,8 @@ print("已產生標準 EDF：", out_file)
 **最簡單啟動方式（推薦所有使用者）：**
 
 直接在檔案總管**雙擊 `start.bat`** 即可：
-- 如果 `dist\NoxPSGViewer\NoxPSGViewer.exe` 已存在 → 直接啟動獨立版（**完全不需要 Python**）。
-- 如果沒有預先打包的 exe → 自動偵測 Python、安裝所有依賴（包含 PyQt6 + pyqtgraph），然後從原始碼啟動 `noxpsg_viewer.py`。
+- 如果 `dist\PSGviewer\PSGviewer.exe` 已存在 → 直接啟動獨立版（**完全不需要 Python**）。
+- 如果沒有預先打包的 exe → 自動偵測 Python、安裝所有依賴（包含 PyQt6 + pyqtgraph），然後從原始碼啟動 `psg_viewer.py`。
 
 `start.bat` 已經把原本分散的安裝與啟動邏輯整合成單一檔案，雙擊即可使用。
 
@@ -205,11 +205,11 @@ print("已產生標準 EDF：", out_file)
    - 清理舊的 `build/` 與 `dist/`
    - 使用 PyInstaller 完整打包（one-folder 模式，推薦）
    - 打包後自動刪除 `build/` 暫存資料夾
-   - 在 `dist/NoxPSGViewer/` 產生「使用前必讀.txt」
+   - 在 `dist/PSGviewer/` 產生「使用前必讀.txt」
 
 3. 打包後的使用：
-   - 把整個 `dist\NoxPSGViewer\` 資料夾複製到任何 Windows 電腦。
-   - **只雙擊 `NoxPSGViewer.exe`**（絕對不要執行 build 資料夾裡的 exe）。
+   - 把整個 `dist\PSGviewer\` 資料夾複製到任何 Windows 電腦。
+   - **只雙擊 `PSGviewer.exe`**（絕對不要執行 build 資料夾裡的 exe）。
    - 之後只要雙擊專案根目錄的 `start.bat` 就能一鍵啟動。
 
 **打包注意**：
@@ -226,7 +226,7 @@ print("已產生標準 EDF：", out_file)
 傳統指令方式（開發者）：
 ```powershell
 # 直接啟動（會自動處理依賴）
-python noxpsg_viewer.py
+python psg_viewer.py
 
 # 或重新打包成獨立 exe
 pip install pyinstaller
@@ -286,7 +286,7 @@ python build_exe.py
 - device_info 修復（DEVICE.INI 手動 section 解析）。
 
 ### 使用方式
-1. `python noxpsg_viewer.py`（或雙擊 start.bat / dist 內 exe）。
+1. `python psg_viewer.py`（或雙擊 start.bat / dist 內 exe）。
 2. 自動載入 `input/` （或「開啟資料夾」選單一/整個 input）。
 3. 左側「Position + Resp」預設即顯示 position（step 彩色 bands + 標籤）+ flow/spo2。
 4. 右鍵 position 波形 → 「編輯 ... 樣式」自訂（accept 後立即生效並記住）。
