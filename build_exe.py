@@ -77,6 +77,24 @@ def build():
         # 讓 PyInstaller 能找到本機模組
         "--paths", str(ROOT),
 
+        # 排除與 PSG viewer 無關的巨型套件：若在同時裝有 ML 套件的環境打包，
+        # PyInstaller 會把它們一併收進來，使體積從 ~350MB 暴增到 ~2.5GB。
+        # 本程式僅用 PyQt6/pyqtgraph/numpy/scipy/pyedflib/openpyxl/xlrd/python-docx/imageio_ffmpeg，
+        # 以下皆未被原始碼匯入（pyqtgraph 對 numba 為 try/except 選用，排除後自動退回 numpy）。
+        *sum(([
+            "--exclude-module", m
+        ] for m in (
+            "tensorflow", "tensorboard", "keras",
+            "torch", "torchvision", "torchaudio",
+            "transformers", "onnxruntime",
+            "numba", "llvmlite",
+            "av",                       # PyAV：未使用（音訊走 imageio_ffmpeg 的 ffmpeg.exe）
+            "sklearn", "scikit_learn",
+            "pandas", "matplotlib",
+            "jax", "jaxlib",
+            "cv2", "IPython", "notebook", "sympy",
+        )), []),
+
         # 加入整個 noxreader / viz 套件（以防萬一）
         "--add-data", f"{ROOT / 'noxreader'}{os.pathsep}noxreader",
         "--add-data", f"{ROOT / 'viz'}{os.pathsep}viz",
