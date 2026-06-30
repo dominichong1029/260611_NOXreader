@@ -29,17 +29,254 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QTextEdit, QGroupBox, QFormLayout, QCheckBox,
     QProgressBar, QStatusBar, QAbstractItemView, QFrame, QGridLayout, QScrollArea, QSizePolicy, QLineEdit,
     QDialog, QListWidget, QListWidgetItem, QMenu, QStyle, QStyleOptionViewItem,
+    QStyledItemDelegate,
 )
 from PyQt6.QtCore import (
-    Qt, QTimer, pyqtSignal, QSettings, QSize, QEvent, QRect,
-    QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
+    Qt, QTimer, pyqtSignal, pyqtSlot, QSettings, QSize, QEvent, QRect, QUrl, QIODevice,
+    QObject, QThread, QMetaObject, QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
 )
-from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QColor, QGuiApplication, QCursor, QValidator
+try:
+    # 播放走 QAudioSink（自行餵 PCM），以支援『即時增益放大』(QAudioOutput 音量鉗在 1.0 無法放大)
+    from PyQt6.QtMultimedia import QAudioSink, QAudioFormat, QMediaDevices, QAudio
+    _HAS_MULTIMEDIA = True
+except Exception:  # 缺 QtMultimedia 外掛時，播放面板顯示但停用，不影響其餘功能
+    QAudioSink = QAudioFormat = QMediaDevices = QAudio = None
+    _HAS_MULTIMEDIA = False
+
+_AUDIO_OUT_FS = 48000  # 輸出取樣率＝Windows 音訊引擎原生率，避開 8kHz→48k 重取樣的額外緩衝/延遲
+
+
+class _AudioPullDevice(QIODevice):
+    """QAudioSink 的 pull 來源（活在音訊執行緒）：呼叫 worker._pull 產生 PCM。"""
+
+    def __init__(self, worker):
+        super().__init__()
+        self._w = worker
+
+    def isSequential(self):
+        return True
+
+    def bytesAvailable(self):
+        return 1 << 30
+
+    def readData(self, maxlen):
+        return self._w._pull(int(maxlen))
+
+    def writeData(self, data):
+        return 0
+
+
+class _AudioWorker(QObject):
+    """音訊播放 worker：活在專用 QThread，獨立於主執行緒的波形重畫，readData 不會被餓死（解長軸斷音）。
+
+    - 來源＝顯示用 8kHz PCM memmap；輸出重取樣到 48kHz（引擎原生率）以降低固有延遲。
+    - 紅線位置由 sink.processedUSecs() 推進，每 ~33ms 以 positionChanged 訊號回主執行緒。
+    - 控制（start/pause/resume/stop/set_rate/set_gain/set_volume）皆為 queued slot，跨執行緒安全。
+    """
+
+    ended = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self._mm = None
+        self._src_fs = 8000
+        self._end = 0                 # 有效結尾（來源 sample）
+        self._cursor = 0.0            # 讀取游標（來源 sample，浮點）
+        self._pos_sec = 0.0           # 最新『已播出來源秒數』；主執行緒輪詢讀取（不推送訊號，避免佇列爆掉凍結 UI）
+        self._rate = 1.0
+        self._gain = 1.0
+        self._vol = 0.8
+        self._base_src = 0.0          # 基準來源 sample（對應 base_usec）
+        self._base_usec = 0
+        # 牆鐘內插錨點：紅線以實時×倍速平滑推進，漂移>80ms 才以 processedUSecs 重新錨定
+        self._anchor_pos = 0.0        # 錨定時的來源 sample 位置
+        self._anchor_wall = None      # 錨定時的牆鐘 (None=尚未錨定/需重錨)
+        self._sink = None
+        self._dev = None
+        self._timer = None
+
+    @pyqtSlot(object, int)
+    def configure(self, mm, src_fs):
+        self._mm = mm
+        self._src_fs = int(src_fs or 8000)
+
+    def _pull(self, maxlen):
+        mm = self._mm
+        if mm is None or maxlen <= 0:
+            return b''
+        nfr = maxlen // 2  # int16 mono
+        if nfr <= 0:
+            return b''
+        end = self._end
+        step = (self._src_fs / float(_AUDIO_OUT_FS)) * self._rate  # 每輸出 frame 前進的來源 sample 數
+        pos = self._cursor + np.arange(nfr, dtype=np.float64) * step
+        pos = pos[pos < end - 1]  # 留 1 給線性內插的 +1
+        if pos.size == 0:
+            self._cursor = float(end)
+            return b''
+        i0 = pos.astype(np.int64)
+        frac = (pos - i0).astype(np.float32)
+        # 只取需要的列再混 mono（切勿對整個 memmap 做 mean → 會掃描數億列卡死）
+        r0 = mm[i0]
+        r1 = mm[i0 + 1]
+        if mm.ndim == 2:
+            a = r0.mean(axis=1).astype(np.float32)
+            b = r1.mean(axis=1).astype(np.float32)
+        else:
+            a = r0.astype(np.float32)
+            b = r1.astype(np.float32)
+        samp = a + (b - a) * frac  # 線性內插上取樣
+        if self._gain != 1.0:
+            samp *= self._gain
+        np.clip(samp, -32768.0, 32767.0, out=samp)
+        self._cursor += pos.size * step
+        return samp.astype('<i2').tobytes()
+
+    @pyqtSlot(float, int, float, float, float)
+    def start(self, start_sample, end_frame, rate, gain, vol):
+        self._stop_internal()
+        self._cursor = float(start_sample)
+        self._end = int(end_frame)
+        self._rate = float(rate)
+        self._gain = float(gain)
+        self._vol = float(vol)
+        self._base_src = float(start_sample)
+        self._pos_sec = float(start_sample) / float(self._src_fs or 8000)
+        try:
+            fmt = QAudioFormat()
+            fmt.setSampleRate(_AUDIO_OUT_FS)
+            fmt.setChannelCount(1)
+            fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+            self._sink = QAudioSink(QMediaDevices.defaultAudioOutput(), fmt)
+            self._sink.setBufferSize(int(_AUDIO_OUT_FS * 2 * 0.12))  # ~120ms 緩衝：小→低延遲（執行緒餵食不怕餓）
+            self._sink.setVolume(self._vol)
+            self._dev = _AudioPullDevice(self)
+            self._dev.open(QIODevice.OpenModeFlag.ReadOnly)
+            self._sink.start(self._dev)
+            self._base_usec = self._sink.processedUSecs()
+        except Exception:
+            self._stop_internal()
+            return
+        self._anchor_wall = None   # 新播放 → 重置內插錨點
+        if self._timer is None:
+            self._timer = QTimer()
+            self._timer.setInterval(16)  # ~60Hz 更新 _pos_sec（純算術，便宜）→ 主執行緒 33ms 輪詢恆讀到新值
+            self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    def _tick(self):
+        if self._sink is None:
+            return
+        try:
+            usec = self._sink.processedUSecs()
+        except Exception:
+            usec = self._base_usec
+        now = time.monotonic()
+        actual = self._base_src + (usec - self._base_usec) * 1e-6 * self._src_fs * self._rate
+        # processedUSecs 在大緩衝下更新很粗（曾實測凍結~280ms）→ 直接用紅線會一格一格跳。
+        # 音訊以實時×倍速前進，故以牆鐘平滑內插達絲滑；偏離真實播放>80ms 才重新錨定校正漂移。
+        if usec <= self._base_usec:
+            est = self._base_src           # 尚未真正開始播（緩衝填充中）
+            self._anchor_wall = None
+        else:
+            if self._anchor_wall is None:
+                self._anchor_pos = actual
+                self._anchor_wall = now
+            est = self._anchor_pos + (now - self._anchor_wall) * self._src_fs * self._rate
+            if abs(est - actual) > 0.08 * self._src_fs:   # 漂移 >80ms → 重新錨定校正
+                self._anchor_pos = actual
+                self._anchor_wall = now
+                est = actual
+        est = max(0.0, min(est, float(self._end)))
+        self._pos_sec = est / float(self._src_fs)  # 主執行緒輪詢；不推送訊號
+        try:
+            idle = self._sink.state() == QAudio.State.IdleState
+        except Exception:
+            idle = True
+        if self._cursor >= self._end and idle:
+            self._stop_internal()
+            self.ended.emit()
+
+    @pyqtSlot()
+    def pause(self):
+        if self._timer:
+            self._timer.stop()
+        if self._sink is not None:
+            try:
+                if self._sink.state() == QAudio.State.ActiveState:
+                    self._sink.suspend()
+            except Exception:
+                pass
+
+    @pyqtSlot()
+    def resume(self):
+        if self._sink is not None:
+            try:
+                self._sink.resume()
+            except Exception:
+                pass
+            self._anchor_wall = None   # 續播 → 重置內插錨點
+            if self._timer:
+                self._timer.start()
+
+    @pyqtSlot()
+    def stop(self):
+        self._stop_internal()
+
+    @pyqtSlot()
+    def release(self):
+        """停止並釋放對 memmap 的參照（供清除音頻前同步呼叫，確保臨時檔可刪）。"""
+        self._stop_internal()
+        self._mm = None
+
+    def _stop_internal(self):
+        if self._timer:
+            self._timer.stop()
+        if self._sink is not None:
+            try:
+                self._sink.stop()
+            except Exception:
+                pass
+            self._sink = None
+        if self._dev is not None:
+            try:
+                self._dev.close()
+            except Exception:
+                pass
+            self._dev = None
+
+    @pyqtSlot(float)
+    def set_rate(self, r):
+        # 重設基準保持紅線連續（已播部分用舊 rate 結算進 base）
+        if self._sink is not None:
+            try:
+                usec = self._sink.processedUSecs()
+                self._base_src += (usec - self._base_usec) * 1e-6 * self._src_fs * self._rate
+                self._base_usec = usec
+            except Exception:
+                pass
+        self._rate = float(r)
+        self._anchor_wall = None   # 變速 → 重置內插錨點（用新 rate 重新內插）
+
+    @pyqtSlot(float)
+    def set_gain(self, g):
+        self._gain = float(g)
+
+    @pyqtSlot(float)
+    def set_volume(self, v):
+        self._vol = float(v)
+        if self._sink is not None:
+            try:
+                self._sink.setVolume(self._vol)
+            except Exception:
+                pass
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QColor, QGuiApplication, QCursor, QValidator, QIcon, QPixmap, QPainter
 
 import pyqtgraph as pg
 
 # 我們的優化後端
 from noxreader import NoxStudy, NoxRecording, NoxEdfRecording, export_to_standard_edf
+from noxreader.audio import AudioSource, SUPPORTED_EXTS
 
 # PR2: special position renderer + VizSettings + dialog (minimal)
 from viz.position_renderer import PositionStepRenderer, VizSettings
@@ -169,6 +406,157 @@ class _OffsetSpinBox(QDoubleSpinBox):
     def validate(self, text, pos):
         # 寬鬆驗證：允許編輯中的時分秒文字（預設數字驗證器會擋掉冒號）
         return (QValidator.State.Acceptable, text, pos)
+
+
+class _SplitOffsetWidget(QWidget):
+    """偏移量輸入：正負 / 時 / 分 / 秒 / 毫秒 各自獨立的欄位，可分別調整。value() 回傳帶號秒數。"""
+
+    valueChanged = pyqtSignal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        self.sign = QComboBox()
+        self.sign.addItems(["＋", "－"])
+        self.sign.setFixedWidth(44)
+        self.hh = QSpinBox(); self.hh.setRange(0, 23); self.hh.setSuffix(" 時")
+        self.mm = QSpinBox(); self.mm.setRange(0, 59); self.mm.setSuffix(" 分")
+        self.ss = QSpinBox(); self.ss.setRange(0, 59); self.ss.setSuffix(" 秒")
+        self.ms = QSpinBox(); self.ms.setRange(0, 999); self.ms.setSuffix(" 毫秒")
+        lay.addWidget(self.sign)
+        for sp in (self.hh, self.mm, self.ss, self.ms):
+            sp.setKeyboardTracking(False)   # 只在編輯完成/按箭頭才 emit
+            sp.setAlignment(Qt.AlignmentFlag.AlignRight)
+            lay.addWidget(sp)
+        self.ms.setMaximumWidth(86)
+        self.sign.currentIndexChanged.connect(self._emit)
+        for sp in (self.hh, self.mm, self.ss, self.ms):
+            sp.valueChanged.connect(self._emit)
+
+    def _emit(self, *_):
+        self.valueChanged.emit(self.value())
+
+    def value(self) -> float:
+        sec = self.hh.value() * 3600 + self.mm.value() * 60 + self.ss.value() + self.ms.value() / 1000.0
+        return -sec if self.sign.currentIndex() == 1 else sec
+
+    def setValue(self, sec: float):
+        for w in (self.sign, self.hh, self.mm, self.ss, self.ms):
+            w.blockSignals(True)
+        try:
+            neg = sec < 0
+            total_ms = int(round(abs(float(sec)) * 1000))
+            self.sign.setCurrentIndex(1 if neg else 0)
+            self.hh.setValue(min(23, total_ms // 3600000))
+            self.mm.setValue((total_ms % 3600000) // 60000)
+            self.ss.setValue((total_ms % 60000) // 1000)
+            self.ms.setValue(total_ms % 1000)
+        finally:
+            for w in (self.sign, self.hh, self.mm, self.ss, self.ms):
+                w.blockSignals(False)
+
+    def setEnabled(self, en: bool):
+        super().setEnabled(en)
+
+
+class _WaveViewBox(pg.ViewBox):
+    """詳細波形 ViewBox：攔截『Ctrl + 左鍵拖曳』。
+    - 音頻通道：呼叫 callback 以拖曳的時間距離微調音頻偏移（不平移視窗）。
+    - 其餘情況：交還 pyqtgraph 預設（左鍵拖曳＝平移時間軸）。"""
+
+    def __init__(self, *args, **kwargs):
+        self._is_audio = False
+        self._ctrl_drag_cb = None   # callback(delta_seconds: float, finished: bool)
+        self._space_cb = None       # callback()：焦點在此(音頻)軸時按 Space 觸發（toggle 播放）
+        super().__init__(*args, **kwargs)
+
+    def _grab_focus(self):
+        # 音頻軸：點擊即取得鍵盤焦點，讓 Space 能 toggle 播放
+        if self._is_audio and self._space_cb is not None:
+            try:
+                self.setFocus()
+            except Exception:
+                pass
+
+    def mouseClickEvent(self, ev):
+        self._grab_focus()
+        super().mouseClickEvent(ev)
+
+    def mouseDragEvent(self, ev, axis=None):
+        self._grab_focus()
+        try:
+            ctrl = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            left = ev.button() == Qt.MouseButton.LeftButton
+        except Exception:
+            ctrl = left = False
+        if self._is_audio and self._ctrl_drag_cb is not None and ctrl and left:
+            ev.accept()
+            try:
+                dx = (self.mapSceneToView(ev.scenePos()).x()
+                      - self.mapSceneToView(ev.lastScenePos()).x())
+            except Exception:
+                dx = 0.0
+            self._ctrl_drag_cb(float(dx), bool(ev.isFinish()))
+            return
+        super().mouseDragEvent(ev, axis)
+
+    def keyPressEvent(self, ev):
+        if self._is_audio and self._space_cb is not None and ev.key() == Qt.Key.Key_Space:
+            ev.accept()
+            self._space_cb()
+            return
+        super().keyPressEvent(ev)
+
+
+class _SourceTagElideDelegate(QStyledItemDelegate):
+    """通道名稱欄：名稱過長時**固定保留完整結尾來源標籤 (EDF)/(NDF)**，只省略前面的 base。
+    需求：狹窄面板下 '1 impedance(NDF)' 不可變成 '1 …' 或 '1 …F)'（後者連 EDF/NDF 都分不出），
+    要呈現如 '1 imped…(NDF)' —— 結尾標籤完整、只在 base 放不下處給刪節號。
+
+    為何不能用通用 ElideMiddle：通用中間省略在窄欄會把後綴砍成 '…F)'，'(EDF)'/'(NDF)'
+    都變一樣，無法辨識來源（已用真 D18 + 真實繪製路徑驗證）。故改為「保後綴、省 base」。
+
+    繪製機制：QTableWidget 只採用 option.text、**忽略 option.textElideMode**（已實機驗證），
+    因此自行算好字串塞進 option.text，並把 textElideMode 設 ElideNone 阻止樣式再省略。"""
+
+    _SUFFIXES = ("(EDF)", "(NDF)")
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        text = option.text
+        if not text:
+            return
+        style = option.widget.style() if option.widget is not None else QApplication.style()
+        text_rect = style.subElementRect(
+            QStyle.SubElement.SE_ItemViewItemText, option, option.widget
+        )
+        # 關鍵：QStyle 繪 item 文字時，會在 SE_ItemViewItemText 矩形內再左右各內縮
+        # (PM_FocusFrameHMargin + 1)（見 QCommonStyle::viewItemDrawText）。subElementRect
+        # 不含這段，故須自行扣除，否則估寬偏大(本例 84 vs 實際 78)，介於兩者間的字串(如
+        # 較寬的 '(NDF)' suffixW=33→paintW=81)會在繪製時被樣式『再次省略』成 '…(…'＝畫面雙刪節號。
+        text_margin = style.pixelMetric(
+            QStyle.PixelMetric.PM_FocusFrameHMargin, option, option.widget
+        ) + 1
+        avail = text_rect.width() - 2 * text_margin
+        option.textElideMode = Qt.TextElideMode.ElideNone  # 一律自繪，禁止樣式再省略
+        if avail <= 0:
+            return
+        fm = option.fontMetrics
+        if fm.horizontalAdvance(text) <= avail:
+            return  # 完整放得下 → 不動
+
+        suffix = next((s for s in self._SUFFIXES if text.endswith(s)), "")
+        if suffix:
+            head = text[:-len(suffix)]
+            head_avail = avail - fm.horizontalAdvance(suffix)
+            if head_avail > 0:
+                # base 右側省略 + 完整後綴 → '1 imped…(NDF)'，後綴永遠完整可辨
+                option.text = fm.elidedText(head, Qt.TextElideMode.ElideRight, head_avail) + suffix
+                return
+            # 連後綴都放不下（極窄，罕見）→ 退回整體右省略
+        option.text = fm.elidedText(text, Qt.TextElideMode.ElideRight, avail)
 
 
 class _EventChannelTable(QTableWidget):
@@ -563,6 +951,16 @@ UNMATCHED_SPECIAL = "__unmatched__"
 class PSGViewer(QMainWindow):
     """主視窗：結構化展示 + 專業互動式信號瀏覽器"""
 
+    # 音訊 worker 控制訊號（跨執行緒 queued；連到 _AudioWorker 的 slot）
+    _sig_aw_configure = pyqtSignal(object, int)
+    _sig_aw_start = pyqtSignal(float, int, float, float, float)
+    _sig_aw_pause = pyqtSignal()
+    _sig_aw_resume = pyqtSignal()
+    _sig_aw_stop = pyqtSignal()
+    _sig_aw_rate = pyqtSignal(float)
+    _sig_aw_gain = pyqtSignal(float)
+    _sig_aw_vol = pyqtSignal(float)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PSG Viewer - 專業 PSG 臨床資料瀏覽器 (基於優化 raw .ndf 讀取)")
@@ -618,10 +1016,31 @@ class PSGViewer(QMainWindow):
         self.x_axis_show_milliseconds: bool = False  # 預設不顯示毫秒
         self.x_axis_absolute_time: bool = True  # 預設顯示絕對牆鐘時間（origin + 相對秒）；關閉則顯示自 0 起的相對經過時間
         self.antialias_on: bool = True  # 抗鋸齒（檢視選單可切換，預設開）；關閉可在密集波形大幅加速繪製
-        # 工具>設定偏移量：對 EDF / NDF 來源波形的『額外』時間偏移調整（秒，疊加在自動對齊之上；可正負）
-        self.source_offset_adjust: dict = {"edf": 0.0, "ndf": 0.0}
+        # 工具>設定偏移量：對 EDF / NDF / 音頻 來源波形的『額外』時間偏移調整（秒，疊加在自動對齊之上；可正負）
+        self.source_offset_adjust: dict = {"edf": 0.0, "ndf": 0.0, "audio": 0.0}
+        # 音頻起始絕對時間相對全域原點的位移（秒）。音頻有效偏移 = _audio_base_sec + 額外偏移調整。
+        # 起始絕對時間只改 base、不受偏移調整影響；偏移調整是在 base 之上再疊加。
+        self._audio_base_sec: float = 0.0
         # 事件標記偏移（秒，可正負）：同步位移波形上的事件標記 + 事件表的開始/結束時間（顯示層，不改原始資料）
         self.event_offset_adjust: float = 0.0
+
+        # 音頻通道（僅本次 session；切換錄音時清除）。display_name -> 通道 dict（含 _source/_ch_index）
+        self.audio_channels: dict = {}
+        self.audio_sources: list = []          # 持有 AudioSource 以便釋放臨時檔
+        self.audio_display_mode: str = "peak"  # peak（min/max 包絡）或 rms（音量大小）
+        # 音頻播放面板（概觀下方播放列）：預設顯示。播放游標(紅線)由音檔實際播放位置驅動，毫秒級同步。
+        self.show_audio_play_panel: bool = True
+        self.playhead_time: float = 0.0        # 播放游標的全域時間（秒，相對全域原點）；播放中的紅線絕對位置
+        self._play_active: bool = False        # 播放/暫停 session 進行中
+        self._playhead_engaged: bool = False   # True(播放/暫停中) → 紅線＝playhead_time(絕對)；False(閒置) → 紅線＝視窗內相對位置
+        self._redline_frac: float = 0.5        # 閒置時紅線在視窗內的相對位置 [0,1]；平移/縮放維持此相對位置 → 絕對時間隨視窗走
+        self._redline_dragging: bool = False   # 拖曳紅線時同步其他軸的遞迴防護
+        # 音訊播放（QAudioSink 在專用執行緒；見 _AudioWorker）。主執行緒只保留來源 meta 與播放/暫停旗標。
+        self._play_src = None                  # 目前播放的 AudioSource
+        self._play_mm = None                   # 該來源的 PCM memmap (frames, nch) int16
+        self._play_total: int = 0              # 總 frame 數
+        self._play_fs: int = 8000              # 來源取樣率（顯示解碼率，預設 8kHz；輸出另升到 48kHz）
+        self._play_paused: bool = False        # 暫停中（可 resume；與導航停止區分）
 
         # PR2: VizSettings (memory container) + position special renderers；PR4 由 PrefsManager 持久化（per-rec）
         self._viz_settings = VizSettings()
@@ -718,6 +1137,9 @@ class PSGViewer(QMainWindow):
         self.channel_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         # 窄面板時啟用水平捲軸，避免裁切；使用者可拖曳欄寬或靠搜尋過濾
         self.channel_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # 名稱欄：狹窄時固定保留完整結尾 (EDF)/(NDF) 來源標籤，只省略前面的 base
+        # （view 層 setTextElideMode 對 QTableWidget 繪製無效，已實機驗證；改由 delegate 自繪省略）
+        self.channel_table.setItemDelegateForColumn(1, _SourceTagElideDelegate(self.channel_table))
 
         # 支援點擊表頭切換升冪/降冪排序（名稱、fs、樣本數等）
         # 使用 setSortIndicatorShown + 小箭頭，不新增任何寬度元素，符合「不要造成版面太多變寬」
@@ -839,7 +1261,7 @@ class PSGViewer(QMainWindow):
         height_layout.addStretch()
         time_layout.addLayout(height_layout)
 
-        self.time_label = QLabel("視窗: 00:00 - 00:30   / 總長 00:00")
+        self.time_label = QLabel("概觀: 00:00 - 00:00   / 總長 00:00")
         time_layout.addWidget(self.time_label)
 
         # === 事件顯示篩選已移到右側 ===
@@ -929,8 +1351,10 @@ class PSGViewer(QMainWindow):
         exc_hbox.addStretch(1)
         ef_lay.addLayout(exc_hbox)
 
-        # 左側：時間控制在上，通道在下並填滿高度（stretch）
+        # 左側：時間控制在上，音頻播放面板居中（時間視窗下方），通道在下並填滿高度（stretch）
         left_layout.addWidget(time_group)
+        self._build_audio_play_panel()
+        left_layout.addWidget(self.audio_play_panel)
         left_layout.addWidget(ch_group, 1)  # stretch factor 1 讓通道高度鋪滿剩餘空間
 
         # left_widget 準備好，稍後加入 main_splitter（左欄）。不再使用 QDockWidget 以避免拖曳寬度卡頓與裁切。
@@ -1047,6 +1471,9 @@ class PSGViewer(QMainWindow):
         self.signal_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.signal_scroll.setWidget(self.signals_pg)
         self.signal_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # 垂直捲動通道列 → 補畫新進入視窗的通道（配合 _perform_update_view 的視窗內虛擬化）
+        self.signal_scroll.verticalScrollBar().valueChanged.connect(
+            lambda *_: self._update_view() if getattr(self, 'current_rec', None) else None)
 
         # 動態最小高度確保選擇大量通道時 scrollbar 出現
         # (在 _init_signal_plots 結束時會根據實際 plot 數更新)
@@ -1061,7 +1488,7 @@ class PSGViewer(QMainWindow):
         # 比例：概觀小而固定、signals 彈性大空間
         self.central_split.setStretchFactor(0, 0)
         self.central_split.setStretchFactor(1, 1)
-        self.central_split.setSizes([85, 800])  # 配合新的概觀軸容器固定高度（小標題 + ruler 給淡藍/紅 ≥10px+ 空間，ticks 固定高度不抖動）
+        self.central_split.setSizes([85, 800])  # 概觀軸容器固定高度 + 詳細波形彈性
 
         # (central_split 稍後由 main_splitter 加入，舊的 local splitter 已移除)
 
@@ -1215,6 +1642,12 @@ class PSGViewer(QMainWindow):
         self.act_choose_event_excel.setToolTip("選擇另一個 Excel (.xls 或 .xlsx) 檔案來替換目前的分析事件標記資料（nef 裝置事件保留）。")
         self.act_choose_event_excel.triggered.connect(self._on_replace_xls_clicked)
 
+        # 加入音頻通道（放在「選擇事件Excel」下方）。需先載入 EDF/NDF（以現有 x 軸 max/min 為界）。
+        self.act_add_audio_channel = QAction("加入音頻通道", self)
+        self.act_add_audio_channel.setToolTip("載入 wav/mp3/ogg/m4a/aac/flac 等音檔，依聲道加入波形（從 0 秒對齊，僅本次 session）。需先載入 EDF/NDF。")
+        self.act_add_audio_channel.triggered.connect(self._on_add_audio_channel)
+        self.act_add_audio_channel.setEnabled(False)  # 未載入錄音前停用
+
         # 例外匹配列表
         self.act_exception_list = QAction("例外匹配列表", self)
         self.act_exception_list.setToolTip("開啟例外匹配列表，設定 NDF 無法匹配時的例外規則（保存並應用後刷新事件相關 UI）。")
@@ -1258,6 +1691,23 @@ class PSGViewer(QMainWindow):
         self.act_show_ms.setChecked(getattr(self, 'x_axis_show_milliseconds', False))
         self.act_show_ms.triggered.connect(self._on_toggle_show_ms)
 
+        # 音頻波形型態（二選一）：包絡(peak min/max) / 音量(RMS)
+        self.act_audio_peak = QAction("包絡 (min/max)", self, checkable=True)
+        self.act_audio_rms = QAction("音量 (RMS)", self, checkable=True)
+        self.act_audio_peak.setChecked(getattr(self, 'audio_display_mode', 'peak') == 'peak')
+        self.act_audio_rms.setChecked(getattr(self, 'audio_display_mode', 'peak') == 'rms')
+        self.act_audio_mode_group = QActionGroup(self)
+        self.act_audio_mode_group.addAction(self.act_audio_peak)
+        self.act_audio_mode_group.addAction(self.act_audio_rms)
+        self.act_audio_mode_group.setExclusive(True)
+        self.act_audio_peak.triggered.connect(lambda c: self._on_audio_mode_changed('peak') if c else None)
+        self.act_audio_rms.triggered.connect(lambda c: self._on_audio_mode_changed('rms') if c else None)
+
+        # 音頻播放面板（概觀下方的播放列）開關，預設開
+        self.act_audio_play_panel = QAction("音頻播放面板", self, checkable=True)
+        self.act_audio_play_panel.setChecked(getattr(self, 'show_audio_play_panel', True))
+        self.act_audio_play_panel.toggled.connect(self._on_toggle_audio_play_panel)
+
     def _create_menus(self):
         menubar = self.menuBar()
 
@@ -1266,6 +1716,7 @@ class PSGViewer(QMainWindow):
         file_menu.addAction(self.act_open)
         file_menu.addAction(self.act_open_edf)
         file_menu.addAction(self.act_choose_event_excel)
+        file_menu.addAction(self.act_add_audio_channel)
         file_menu.addAction(self.act_export)
         file_menu.addSeparator()
         file_menu.addAction(self.act_quit)
@@ -1284,6 +1735,12 @@ class PSGViewer(QMainWindow):
         xaxis_menu.addAction(self.act_time_seconds)
         view_menu.addMenu(xaxis_menu)
         view_menu.addAction(self.act_show_ms)
+        view_menu.addSeparator()
+        audio_menu = QMenu("音頻波形型態", view_menu)
+        audio_menu.addAction(self.act_audio_peak)
+        audio_menu.addAction(self.act_audio_rms)
+        view_menu.addMenu(audio_menu)
+        view_menu.addAction(self.act_audio_play_panel)
 
         # 設定偏移量（EDF/NDF 來源波形時間微調）
         self.act_set_offset = QAction("設定偏移量", self)
@@ -1548,10 +2005,16 @@ class PSGViewer(QMainWindow):
 
     def _load_recording(self, rec: NoxRecording | NoxEdfRecording):
         self._loading_rec = True
+        # 切換到不同錄音時清除音頻通道（音頻對齊綁定該錄音的時間軸；同一 rec reload 則保留）
+        if getattr(self, "current_rec", None) is not rec:
+            self._clear_audio_channels()
         self.current_rec = rec
+        if getattr(self, "act_add_audio_channel", None):
+            self.act_add_audio_channel.setEnabled(True)
         # 概觀軸/捲軸右界用「全域跨度」（origin→max channel end），涵蓋因分批啟動而較晚結束的通道與 EDF 尾段；
         # NoxEdfRecording 無 total_span_sec 時退回 duration_sec。
         self.max_duration = float(getattr(rec, 'total_span_sec', None) or rec.duration_sec)
+        self._invalidate_ch_dur_map()  # 換錄音 → 失效時長快取
         # 立即更新時間 spin 的動態上限（長度上限從硬編 3600 改為總長，避免無法設定 >3600s 的視窗）
         if hasattr(self, 'dur_spin') and self.dur_spin:
             try:
@@ -1914,14 +2377,16 @@ class PSGViewer(QMainWindow):
         )
         self._sort_channel_table()
 
-    def _create_channel_row(self, ch: dict, checked: bool):
+    def _create_channel_row(self, ch: dict, checked: bool, row_index: int | None = None):
         """建立單一通道 row（checkbox widget + 資料欄 + tooltip + signal connect）。
         供 _populate_channel_table 與 _sort_channel_table 共用，避免重複。
+        row_index=None 時附加在最後；指定時插入該列（音頻通道用來釘在最上）。
         （已取消樣式按鈕）
         """
-        row = self.channel_table.rowCount()
+        row = self.channel_table.rowCount() if row_index is None else int(row_index)
         self.channel_table.insertRow(row)
         ch_name = ch["name"]
+        is_audio = (ch.get("source") == "audio")
 
         # 顯示勾選
         chk = QCheckBox()
@@ -1935,7 +2400,9 @@ class PSGViewer(QMainWindow):
         chk.setProperty("channel_name", ch_name)
 
         # 資料欄（名稱、fs、單位、樣本數）使用 QTableWidgetItem，方便未來擴充
-        self.channel_table.setItem(row, 1, QTableWidgetItem(ch_name))
+        name_item = QTableWidgetItem(ch_name)
+        name_item.setToolTip(ch_name)  # 名稱可能被中間省略，hover 顯示完整名稱
+        self.channel_table.setItem(row, 1, name_item)
         self.channel_table.setItem(row, 2, QTableWidgetItem(f"{ch['fs']:.1f}"))
         self.channel_table.setItem(row, 3, QTableWidgetItem(ch["unit"] or ""))
         self.channel_table.setItem(row, 4, QTableWidgetItem(str(ch["samples"])))
@@ -1944,9 +2411,9 @@ class PSGViewer(QMainWindow):
         src_item.setToolTip(ch.get("path") or source_label)
         self.channel_table.setItem(row, 5, src_item)
 
-        # PR5 低頻提示（position / fs<5）
+        # PR5 低頻提示（position / fs<5）；音頻通道不套用 position 判斷
         fs_val = ch.get("fs", 0)
-        if fs_val < 5 or self.current_rec.is_position_channel(ch_name):
+        if not is_audio and (fs_val < 5 or self.current_rec.is_position_channel(ch_name)):
             lowfreq_tip = "低頻通道（fs<5Hz 或 position），使用特殊渲染。"
             for c in range(6):
                 item = self.channel_table.item(row, c)
@@ -2062,9 +2529,10 @@ class PSGViewer(QMainWindow):
 
         chans.sort(key=get_sort_key, reverse=reverse)
 
-        # 重建表格（依新順序 + 還原 checked）
+        # 重建表格：音頻通道永遠釘在最上（不參與排序），其後接排序後的 recording 通道
+        audio_dicts = list(self.audio_channels.values()) if getattr(self, "audio_channels", None) else []
         table.setRowCount(0)
-        for ch in chans:
+        for ch in (audio_dicts + chans):
             is_checked = ch["name"] in checked_names
             self._create_channel_row(ch, is_checked)
 
@@ -2291,6 +2759,7 @@ class PSGViewer(QMainWindow):
         self.event_label_items = []
         self.position_renderers = {}
         self.plot_red_lines = []  # 重建時清空舊的紅線
+        self._evis_state = None   # 事件圖元重建門檻狀態（plots 重建→失效）
 
         if not self.current_rec or not self.visible_channels:
             # 放一個提示在 signals 區
@@ -2308,12 +2777,19 @@ class PSGViewer(QMainWindow):
         n = len(self.visible_channels)
         for i, ch_name in enumerate(self.visible_channels):
             # 使用自定義 TimeAxisItem，只改標籤顯示格式 (時分秒/秒數 + 毫秒)，tick 間隔保持預設
+            _is_audio_ch = self._is_audio_channel(ch_name)
+            _vb = _WaveViewBox()
+            _vb._is_audio = _is_audio_ch
+            _vb._ctrl_drag_cb = self._on_audio_ctrl_drag if _is_audio_ch else None
+            if _is_audio_ch:
+                _vb._space_cb = self._toggle_play
+                _vb.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # 點擊音頻軸取得焦點 → Space 可 toggle 播放
             try:
                 p_time_axis = TimeAxisItem(self, orientation='bottom')
                 p_time_axis.setStyle(tickFont=pg.QtGui.QFont("Microsoft JhengHei", 7), tickLength=2, tickTextOffset=1)
-                p = self.signal_container.addPlot(row=i, col=0, axisItems={'bottom': p_time_axis})
+                p = self.signal_container.addPlot(row=i, col=0, viewBox=_vb, axisItems={'bottom': p_time_axis})
             except Exception:
-                p = self.signal_container.addPlot(row=i, col=0)
+                p = self.signal_container.addPlot(row=i, col=0, viewBox=_vb)
             # 移除上方的標題label（依使用者要求，取消此佔位與關閉icon）。通道名稱由左軸 y label 顯示。
             # 寫死固定左軸寬度，確保所有通道波形區域寬度一致（專業軟體常見做法）
             p.getAxis("left").setWidth(65)
@@ -2351,7 +2827,11 @@ class PSGViewer(QMainWindow):
             p.setMenuEnabled(False)  # 移除預設 UI 裝飾，減少左上角重疊
 
             # 簡潔的滑鼠滾輪提示（依使用者要求：去除廢話與「已修復」自我說明）
-            p.setToolTip("使用滑鼠滾輪調整所有顯示通道的時間顯示範圍")
+            if _is_audio_ch:
+                p.setToolTip("滑鼠滾輪：調整所有通道的時間顯示範圍。\n"
+                             "音頻通道：按住 Ctrl 並左右拖曳可微調此音頻的時間偏移")
+            else:
+                p.setToolTip("使用滑鼠滾輪調整所有顯示通道的時間顯示範圍")
 
             if i < n - 1:
                 p.setXLink(self.plot_items[0] if self.plot_items else None)  # 連動 X (signals 之間)
@@ -2400,12 +2880,14 @@ class PSGViewer(QMainWindow):
 
             # (事件 markers 由 _add_event_markers_to_plots 依 by-channel 加入，取代舊 placeholder)
 
-            # 為每個詳細通道 plot 加入細紅虛線，與概觀軸的紅線同步位置（中心時間），方便對照目前視窗在各波形上的位置
-            # 使用 dashed 細線 (width=1)，zValue 適中不遮主資料
+            # 為每個詳細通道 plot 加入細紅虛線（播放游標）：可直接拖曳改變紅線相對位置（拖空白處仍平移時間軸）。
+            # 使用 dashed 細線 (width=1)，zValue 適中不遮主資料；hoverPen 加粗提示可拖。
             try:
-                red = pg.InfiniteLine(pos=0, angle=90,
-                    pen=pg.mkPen('#d62728', width=1, style=Qt.PenStyle.DashLine))
+                red = pg.InfiniteLine(pos=0, angle=90, movable=True,
+                    pen=pg.mkPen('#d62728', width=1, style=Qt.PenStyle.DashLine),
+                    hoverPen=pg.mkPen('#d62728', width=3))
                 red.setZValue(45)
+                red.sigDragged.connect(self._on_redline_dragged)
                 p.addItem(red)
                 self.plot_red_lines.append(red)
             except Exception:
@@ -2484,6 +2966,9 @@ class PSGViewer(QMainWindow):
         回傳 (data, fs, x0)：x0 = max(t0, offset)，即資料第一筆的全域秒數。
         若整個視窗落在通道起始之前，回傳空資料。
         """
+        # 音頻通道走獨立讀取路徑（ffmpeg 解碼後的 PCM memmap + 包絡抽稀）
+        if self._is_audio_channel(ch):
+            return self._read_audio_window(ch, t0, dur)
         rec = self.current_rec
         try:
             info = rec.get_channel_info(ch) or {}
@@ -2507,6 +2992,201 @@ class PSGViewer(QMainWindow):
             return np.array([]), 1.0, t0
         x0 = read_t0 + offset  # = max(t0, offset)
         return data, fs, x0
+
+    # ----------------------------------------------------------- 音頻通道支援
+    def _is_audio_channel(self, ch: str) -> bool:
+        return bool(getattr(self, "audio_channels", None)) and ch in self.audio_channels
+
+    def _channel_offset_sec(self, ch: str) -> float:
+        """通道相對全域原點的起始秒（音頻 = 0 + 音頻偏移；其餘委派 recording）。"""
+        if self._is_audio_channel(ch):
+            return float(self.source_offset_adjust.get("audio", 0.0) or 0.0)
+        return float(self.current_rec.channel_offset_sec(ch))
+
+    def _read_audio_window(self, ch: str, t0: float, dur: float):
+        """讀取音頻通道在全域時間窗 [t0, t0+dur] 的包絡資料。
+
+        音頻無絕對時間：自全域 0 秒起算，疊加『設定偏移量>音頻』。視窗落在音頻範圍外回空，
+        因此超過現有時間軸 max 的部分自然不顯示（視窗右界本就受 max 限制）。
+        回傳 (y, fs_eff, x0)，fs_eff = len(y)/實得時長，供呼叫端用 linspace 還原 x。
+        """
+        info = self.audio_channels.get(ch)
+        if not info:
+            return np.array([]), 1.0, t0
+        src = info["_source"]
+        idx = int(info["_ch_index"])
+        offset = float(self.source_offset_adjust.get("audio", 0.0) or 0.0)
+        local_t0 = t0 - offset
+        read_t0 = local_t0 if local_t0 > 0 else 0.0
+        read_dur = dur - (read_t0 - local_t0)
+        if read_dur <= 0:
+            return np.array([]), 1.0, t0
+        mode = "rms" if getattr(self, "audio_display_mode", "peak") == "rms" else "peak"
+        try:
+            # 顯示點數依繪圖寬度自適應（原本固定 8000 → pyqtgraph 未對音頻降採樣，整段每幀畫 8000 點＝主卡頓源）。
+            # 峰值包絡每桶仍取 min/max → 不漏 spike，只是 x 解析度對齊像素，肉眼無損但重繪快數倍。
+            # 分桶對齊固定格線 → 回傳實際對齊起點 aligned_start，捲動時波形不隨幀重新分桶（不閃爍）。
+            y, fs_eff, _got, aligned_start = src.read_envelope(
+                idx, read_t0, read_dur, max_points=self._audio_display_points(), mode=mode)
+        except Exception:
+            return np.array([]), 1.0, t0
+        if len(y) == 0:
+            return np.array([]), 1.0, t0
+        x0 = aligned_start + offset   # 用格線對齊起點定位（非 read_t0），確保波形與絕對時間一致
+        return y, fs_eff, x0
+
+    def _audio_display_points(self) -> int:
+        """音頻波形顯示點數：依繪圖區寬度自適應（約 1 點/像素，峰值包絡每桶 min/max 不漏 spike）。
+        取代原固定 8000（pyqtgraph 未對音頻降採樣→每幀畫 8000 點是播放卡頓主因）。"""
+        try:
+            w = int(self.signals_pg.width())
+        except Exception:
+            w = 1400
+        return max(800, min(4000, w))
+
+    def _visible_row_range(self):
+        """目前捲動區(QScrollArea)內可見的通道索引範圍 [lo, hi)（上下各留一列邊距，確保不漏畫可見通道）。
+        通道很多但只看得到幾個時，視窗外的通道不必每幀重繪 → 大幅省繪製。回傳涵蓋全部代表不裁切。"""
+        try:
+            n = len(self.plot_items)
+            if n <= 0:
+                return 0, 0
+            vh = self.signal_scroll.viewport().height()
+            content_h = self.signals_pg.height()
+            # 沒有實際捲動（全部都看得到 / 尚未佈局 / headless）→ 全畫，不虛擬化（避免誤跳過可見通道）
+            if vh <= 0 or content_h <= vh + 4:
+                return 0, n
+            row_h = content_h / n   # 每列高度由內容總高均分推估
+            top = self.signal_scroll.verticalScrollBar().value()
+            lo = max(0, int(top / row_h) - 1)
+            hi = min(n, int((top + vh) / row_h) + 2)
+            return lo, hi
+        except Exception:
+            return 0, 10 ** 9
+
+    def _all_channel_dicts(self) -> list:
+        """音頻通道（排最上）+ 現有 recording 通道。供通道表與 ch_dur 查找共用。"""
+        audio = list(self.audio_channels.values()) if getattr(self, "audio_channels", None) else []
+        rec = list(self.current_rec.channels) if self.current_rec else []
+        return audio + rec
+
+    def _channel_dur_map(self) -> dict:
+        """名稱→duration_sec 的快取表（供 _perform_update_view 每幀查 ch_dur）。
+        `current_rec.channels` 屬性每次存取都重建清單並對每通道做 pathlib 解析（很貴）；
+        改為快取一次，通道集合變動時以 `_invalidate_ch_dur_map()` 失效，避免每幀 O(visible×total) 重算。"""
+        m = getattr(self, "_ch_dur_map", None)
+        if m is None:
+            m = {}
+            md = float(getattr(self, "max_duration", 0) or 0)
+            try:
+                for c in self._all_channel_dicts():
+                    nm = c.get("name")
+                    if nm is not None:
+                        m[nm] = float(c.get("duration_sec") or md)
+            except Exception:
+                pass
+            self._ch_dur_map = m
+        return m
+
+    def _invalidate_ch_dur_map(self):
+        self._ch_dur_map = None
+
+    def _clear_audio_channels(self):
+        """釋放所有音頻來源（臨時 PCM 檔）並清空，於切換錄音時呼叫。"""
+        self._stop_and_clear_media()
+        for src in getattr(self, "audio_sources", []) or []:
+            try:
+                src.close()
+            except Exception:
+                pass
+        self.audio_sources = []
+        self.audio_channels = {}
+        self._invalidate_ch_dur_map()
+
+    def _unique_channel_name(self, name: str) -> str:
+        """確保通道名唯一（同一音檔重複加入或與現有通道同名時加後綴）。"""
+        existing = set(self.audio_channels.keys())
+        try:
+            existing |= {c["name"] for c in (self.current_rec.channels if self.current_rec else [])}
+        except Exception:
+            pass
+        if name not in existing:
+            return name
+        k = 2
+        while f"{name}#{k}" in existing:
+            k += 1
+        return f"{name}#{k}"
+
+    def _on_add_audio_channel(self):
+        """檔案>加入音頻通道：選音檔→（多聲道詢問拆分/混音）→ffmpeg 解碼→插入通道最上方並繪製。"""
+        if not self.current_rec:
+            QMessageBox.information(self, "請先載入", "請先載入 EDF/NDF 錄音，音頻會以現有時間軸為界對齊。")
+            return
+        exts = " ".join(f"*{e}" for e in SUPPORTED_EXTS)
+        path, _ = QFileDialog.getOpenFileName(self, "選擇音檔", "", f"音訊檔 ({exts});;所有檔案 (*.*)")
+        if not path:
+            return
+        try:
+            src = AudioSource(path)
+            src.probe()
+        except Exception as e:
+            QMessageBox.critical(self, "無法讀取音檔", f"{Path(path).name}\n\n{e}")
+            return
+
+        mode = "split"
+        if src.n_channels > 1:
+            reply = QMessageBox.question(
+                self, "多聲道音檔",
+                f"此音檔有 {src.n_channels} 個聲道。\n\n要拆成多個通道（各聲道分開顯示）嗎？\n選「否」則混成單聲道。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            mode = "split" if reply == QMessageBox.StandardButton.Yes else "mono"
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self.statusBar().showMessage(f"正在解碼音檔 {Path(path).name} ...", 0)
+        QApplication.processEvents()
+        try:
+            src.decode(mode=mode)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            self.statusBar().clearMessage()
+            QMessageBox.critical(self, "解碼失敗", f"{Path(path).name}\n\n{e}")
+            return
+        QApplication.restoreOverrideCursor()
+
+        stem = Path(path).stem
+        frames = int(round(src.duration_sec * src.target_fs))
+        new_names = []
+        for idx, label in enumerate(src.channel_labels):
+            base = f"0_音頻_{stem}"
+            name = self._unique_channel_name(f"{base}_{label}" if label else base)
+            self.audio_channels[name] = {
+                "name": name, "base_name": name, "source": "audio",
+                "fs": float(src.target_fs), "unit": "音訊",
+                "desc": f"{stem} {label}".strip(), "samples": frames,
+                "duration_sec": float(src.duration_sec), "path": str(path),
+                "header_offset": 0, "inferred_fs": None, "source_label": "音頻",
+                "start_offset_sec": 0.0, "start_datetime": None,
+                "_source": src, "_ch_index": idx,
+            }
+            new_names.append(name)
+        self.audio_sources.append(src)
+        self._invalidate_ch_dur_map()  # 通道集合改變 → 失效時長快取
+        # 啟用播放面板並為（第一個）音頻來源建立播放後端（QAudioSink）
+        self._update_play_panel_enabled()
+        self._ensure_play_source()
+
+        # 插入通道表最上方（不動既有勾選），預設勾選新音頻通道
+        self.channel_table.blockSignals(True)
+        for i, name in enumerate(new_names):
+            self._create_channel_row(self.audio_channels[name], True, row_index=i)
+        self.channel_table.blockSignals(False)
+
+        # 同步可見通道並繪製（差異載入只處理新音頻通道）
+        self._sync_visible_channels_from_table()
+        self.statusBar().showMessage(
+            f"已加入音頻：{stem}（{len(new_names)} 聲道，{'拆分' if mode == 'split' else '混音'}）", 4000)
 
     def _load_next_data_batch(self):
         """每批載入 BATCH_SIZE 個通道的資料（get_data + 設定 curve / renderer）。"""
@@ -2534,17 +3214,10 @@ class PSGViewer(QMainWindow):
                 fs = 1.0
                 x0 = self.time_start
 
-            # per-channel 實際 dur + 絕對起始 offset → 通道全域結束 = offset + ch_dur
-            ch_dur = self.max_duration
+            # per-channel 實際 dur + 絕對起始 offset → 通道全域結束 = offset + ch_dur（查快取表）
+            ch_dur = self._channel_dur_map().get(ch, self.max_duration)
             try:
-                for c in (getattr(self.current_rec, 'channels', None) or []):
-                    if c.get('name') == ch:
-                        ch_dur = float(c.get('duration_sec') or ch_dur)
-                        break
-            except Exception:
-                pass
-            try:
-                ch_global_end = float(self.current_rec.channel_offset_sec(ch)) + ch_dur
+                ch_global_end = float(self._channel_offset_sec(ch)) + ch_dur
             except Exception:
                 ch_global_end = ch_dur
 
@@ -2757,8 +3430,13 @@ class PSGViewer(QMainWindow):
 
         try:
             n = len(self.visible_channels)
+            # 多通道時只重繪捲動視窗內看得到的通道（視窗外的不必每幀重讀+重繪）。
+            # 垂直捲動通道列時由 scrollbar valueChanged → _update_view 補畫新進入視窗的通道。
+            vlo, vhi = self._visible_row_range()
 
             for i in range(min(n, len(self.plot_items))):
+                if i < vlo or i >= vhi:
+                    continue  # 捲動視窗外 → 跳過重繪（虛擬化）
                 ch = self.visible_channels[i]
                 try:
                     data, fs, x0 = self._read_channel_window(ch, self.time_start, self.time_duration)
@@ -2768,17 +3446,10 @@ class PSGViewer(QMainWindow):
                     x0 = self.time_start
 
                 # 取得此通道的實際資料長度（重要：部分通道如 oximeter 衍生可能短於總長）
-                # 並加上絕對起始 offset → 通道全域結束 = offset + ch_dur
-                ch_dur = self.max_duration
+                # 並加上絕對起始 offset → 通道全域結束 = offset + ch_dur。查快取表，避免每幀重建 .channels。
+                ch_dur = self._channel_dur_map().get(ch, self.max_duration)
                 try:
-                    for c in (getattr(self.current_rec, 'channels', None) or []):
-                        if c.get('name') == ch:
-                            ch_dur = float(c.get('duration_sec') or ch_dur)
-                            break
-                except Exception:
-                    pass
-                try:
-                    ch_global_end = float(self.current_rec.channel_offset_sec(ch)) + ch_dur
+                    ch_global_end = float(self._channel_offset_sec(ch)) + ch_dur
                 except Exception:
                     ch_global_end = ch_dur
 
@@ -2845,6 +3516,8 @@ class PSGViewer(QMainWindow):
                 if not (i in getattr(self, 'position_renderers', {}) and self.position_renderers.get(i)):
                     if len(y) > 0:
                         try:
+                            # 每幀依資料 min/max 設定 Y（不可快取跳過：滑鼠縮放等互動會改變實際 Y，
+                            # 快取的「已套用值」會與真實視圖不同步 → 跳過會把 spike 切頂/停在錯誤範圍）。
                             ymin, ymax = self._get_robust_y_limits(y, ch)
                             if i < len(self.plot_items):
                                 self.plot_items[i].setYRange(ymin, ymax, padding=0)
@@ -2866,8 +3539,11 @@ class PSGViewer(QMainWindow):
                 # (事件 markers 採可視範圍渲染，於下方依目前視窗重繪)
 
             # 更新 overview region (淡藍色蒙層) + 目前位置紅線
-            # 確保與下方詳細波形的時間視窗完全同步
-            self._update_overview_region()
+            # 播放捲動時走輕量版（只移動藍區/紅線，省去每幀 x範圍重設/標籤/整體 repaint）；其餘走完整版
+            if getattr(self, '_play_active', False):
+                self._update_overview_playhead()
+            else:
+                self._update_overview_region()
 
             # 更新 plot X range
             if self.plot_items:
@@ -2876,13 +3552,27 @@ class PSGViewer(QMainWindow):
                 self.overview_plot.setYRange(0, 1, padding=0)
             self._refresh_all_time_axes()
 
-            # 可視範圍事件標記：依目前視窗重繪（只畫視窗內標記，大量事件時平移仍順）。
-            # 事件表不受影響仍顯示全部。
+            # 可視範圍事件標記：只在「目前視窗已超出上次建好的覆蓋範圍(±窗寬邊距)、或縮放/選取/偏移/蒙層開關改變」時才重建。
+            # 標記在資料座標、捲動時隨視圖移動仍正確 → 捲動於邊距內可重用，免每幀 churn QGraphics。事件表仍顯示全部。
             if getattr(self, '_events_loaded', False) and getattr(self, 'selected_event_channels', None):
-                self._clear_event_visuals()
-                self._add_event_markers_to_plots()
-                if getattr(self, 'show_event_background_overlay', False):
-                    self._add_event_time_overlays()
+                eo = float(getattr(self, "event_offset_adjust", 0.0) or 0.0)
+                sel_token = frozenset(self.selected_event_channels)
+                ov = bool(getattr(self, 'show_event_background_overlay', False))
+                st = getattr(self, '_evis_state', None)
+                covered = (
+                    st is not None and st[1] == self.time_duration and st[2] == eo
+                    and st[3] == sel_token and st[4] == ov
+                    and self.time_start >= st[0] - st[1]
+                    and (self.time_start + self.time_duration) <= st[0] + 2 * st[1]
+                )
+                if not covered:
+                    self._clear_event_visuals()
+                    self._add_event_markers_to_plots()
+                    if ov:
+                        self._add_event_time_overlays()
+                    self._evis_state = (self.time_start, self.time_duration, eo, sel_token, ov)
+            else:
+                self._evis_state = None
 
         finally:
             self._updating_view = False
@@ -2898,6 +3588,9 @@ class PSGViewer(QMainWindow):
         new_dur = x_range[1] - x_range[0]
         if new_dur < 0.5:
             new_dur = 0.5
+        # 僅在 X 軸（時間）真的改變時視為導航 → 停止播放（避免純 Y 變更如 Fit-Y 誤停播放）
+        if abs(new_start - self.time_start) > 1e-6 or abs(new_dur - self.time_duration) > 1e-6:
+            self._release_playhead()
         self.time_start = max(0, min(new_start, self.max_duration - new_dur))
         self.time_duration = min(new_dur, self.max_duration)
         self._update_time_controls()
@@ -2910,6 +3603,7 @@ class PSGViewer(QMainWindow):
     def _on_overview_region_changed(self):
         if self._updating_view or not self.overview_region:
             return
+        self._release_playhead()
         r = self.overview_region.getRegion()
         self.time_start = max(0, r[0])
         self.time_duration = max(1, r[1] - r[0])
@@ -2962,7 +3656,7 @@ class PSGViewer(QMainWindow):
         finally:
             self._updating_view = False
         if hasattr(self, 'overview_vline'):
-            self.overview_vline.setValue(self.time_start + self.time_duration / 2)
+            self.overview_vline.setValue(self._red_line_pos())
         if self.overview_plot and getattr(self, 'max_duration', 0):
             self._set_overview_xrange()
             if hasattr(self, 'overview_end_time_label'):
@@ -2977,11 +3671,32 @@ class PSGViewer(QMainWindow):
         # 同步紅線到各通道（在 vline 更新後）
         self._sync_red_markers()
 
+    def _update_overview_playhead(self):
+        """播放捲動專用的輕量概觀更新。
+        - 各軸紅線同步：便宜（與主波形重繪合併），每幀都做。
+        - 概觀藍區/紅線指示：repaint 較貴（實測每幀約 94ms，因概觀是獨立 widget 的另一次 paint），
+          但它只是橫跨整段錄音的粗略位置指示 → 播放時『節流到 ~6fps』更新，延遲數十 ms 無感，
+          把這 94ms 從多數幀移除。"""
+        self._sync_red_markers()
+        now = time.time()
+        # 節流須 > 單幀時間才會真的略過幀（單幀約170ms）；用 0.5s → 概觀約 2fps 更新，主波形不被其 94ms 拖累
+        if now - getattr(self, '_last_overview_play_update', 0.0) < 0.5:
+            return
+        self._last_overview_play_update = now
+        if self.overview_region:
+            self._updating_view = True
+            try:
+                self.overview_region.setRegion([self.time_start, self.time_start + self.time_duration])
+            finally:
+                self._updating_view = False
+        if hasattr(self, 'overview_vline'):
+            self.overview_vline.setValue(self._red_line_pos())
+
     def _sync_red_markers(self):
         """同步所有詳細 plot 上的細紅虛線位置到概觀軸紅線（目前視窗中心時間）。在 _update_overview_region 及 time 改變處呼叫。"""
         if not getattr(self, 'plot_red_lines', None):
             return
-        center = self.time_start + self.time_duration / 2.0 if getattr(self, 'max_duration', 0) else 0.0
+        center = self._red_line_pos()
         for line in self.plot_red_lines:
             if line is not None:
                 try:
@@ -3025,6 +3740,7 @@ class PSGViewer(QMainWindow):
     def _on_slider_changed(self, val):
         if not self.max_duration:
             return
+        self._release_playhead()
         fraction = val / 1000.0
         self.time_start = fraction * (self.max_duration - self.time_duration)
         self.time_start = max(0, min(self.time_start, self.max_duration - self.time_duration))
@@ -3035,6 +3751,7 @@ class PSGViewer(QMainWindow):
             self._save_time_for_current()  # PR4: 記住最後時間視窗（per-rec）
 
     def _on_time_spin_changed(self):
+        self._release_playhead()
         self.time_start = self.start_spin.value()
         self.time_duration = self.dur_spin.value()
         if getattr(self, 'max_duration', 0) > 0:
@@ -3062,9 +3779,8 @@ class PSGViewer(QMainWindow):
             self.dur_spin.setValue(min(self.time_duration, self.max_duration or 60.0))
             pos = int((self.time_start / max(1, self.max_duration - self.time_duration)) * 1000) if self.max_duration > self.time_duration else 0
             self.pos_slider.setValue(max(0, min(1000, pos)))
-            end_t = self.time_start + self.time_duration
             self.time_label.setText(
-                f"視窗: {self._fmt_time_pos(self.time_start, include_ms=False)} - {self._fmt_time_pos(end_t, include_ms=False)}   / 總長 {format_time_label(self.max_duration)}"
+                f"概觀: {self._fmt_time_pos(0.0, include_ms=False)} - {self._fmt_time_pos(self.max_duration, include_ms=False)}   / 總長 {format_time_label(self.max_duration)}"
             )
             self._update_abs_time_edits()
         finally:
@@ -3104,8 +3820,10 @@ class PSGViewer(QMainWindow):
             return
         rec_name = self.current_rec.name
         try:
-            if self.visible_channels:
-                self.prefs.save_visible(rec_name, self.visible_channels)
+            # 音頻通道為 session 暫存、無法跨重開還原 → 不寫入 saved-visible（避免污染偏好）
+            persist_vis = [c for c in self.visible_channels if not self._is_audio_channel(c)]
+            if persist_vis:
+                self.prefs.save_visible(rec_name, persist_vis)
             self.prefs.save_time_window(rec_name, self.time_start, self.time_duration)
             # 已取消 scale UI，無需 save
             self.prefs.save_viz_settings(rec_name, self._viz_settings)
@@ -3352,6 +4070,7 @@ class PSGViewer(QMainWindow):
 
     def _clear_event_visuals(self):
         """清除目前波形上的事件標記與蒙層（含文字標籤）。"""
+        self._evis_state = None  # 圖元已清 → 重建門檻失效，確保下次 _perform_update_view 重建
         for item in getattr(self, 'event_marker_items', []) + getattr(self, 'event_overlay_regions', []) + getattr(self, 'event_label_items', []):
             for p in getattr(self, 'plot_items', []) or []:
                 try:
@@ -3427,6 +4146,412 @@ class PSGViewer(QMainWindow):
         else:
             self._clear_event_overlays()
 
+    def _on_audio_mode_changed(self, mode):
+        """切換音頻波形型態（包絡/RMS）。清除音頻快取後立即重繪。"""
+        if mode not in ("peak", "rms"):
+            return
+        self.audio_display_mode = mode
+        # 清除音頻通道的顯示快取，避免 snapshot 重用到舊型態資料
+        cache = getattr(self, "_channel_data_cache", None)
+        if isinstance(cache, dict):
+            for name in list(cache.keys()):
+                if self._is_audio_channel(name):
+                    cache.pop(name, None)
+        if getattr(self, "audio_channels", None):
+            self._update_view(immediate=True)
+
+    # ============================ 音頻播放面板 ============================
+    def _make_media_icon(self, std_pixmap) -> QIcon:
+        """以標準媒體圖示為基礎，附上一個『較淺灰』的停用版 pixmap。
+        Qt 預設停用圖示偏深，擁擠面板上易被誤認為可點。
+
+        關鍵：**只換顏色、不動尺寸**。先前用 setOpacity 淡化會讓抗鋸齒邊緣消失導致圖示
+        縮水變細（已用實機渲染證實）；改用 SourceIn 把原圖 alpha 當遮罩重新填成淺灰，
+        形狀與尺寸與啟用態完全一致，僅顏色變淺。啟用(Normal)態維持原生圖示不變。
+        產生多種尺寸(16/24/32)並保留 devicePixelRatio，確保高 DPI 下不糊不縮。"""
+        base = self.style().standardIcon(std_pixmap)
+        icon = QIcon(base)
+        for sz in (16, 24, 32):
+            src = base.pixmap(sz, sz)
+            if src.isNull():
+                continue
+            tinted = QPixmap(src.size())
+            tinted.fill(Qt.GlobalColor.transparent)
+            tinted.setDevicePixelRatio(src.devicePixelRatio())
+            p = QPainter(tinted)
+            p.drawPixmap(0, 0, src)  # 鋪上原始形狀 + alpha
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            p.fillRect(tinted.rect(), QColor(190, 190, 190))  # 只換成淺灰，保留 alpha/尺寸
+            p.end()
+            icon.addPixmap(tinted, QIcon.Mode.Disabled)
+        return icon
+
+    def _build_audio_play_panel(self):
+        """左側控制面板（時間視窗下方）的音頻播放區：
+        第一行＝播放/暫停 + 倍速；第二行＝音量 + 增益（兩條 slider 等寬）。
+        無音頻時控制置灰（仍顯示）。後端＝QAudioSink，紅線由實際播放游標驅動 → 毫秒級同步。"""
+        panel = QGroupBox("音頻播放")
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(6, 4, 6, 4)
+        outer.setSpacing(4)
+
+        # --- 第一行：播放/暫停 + 倍速 + 時間 ---
+        row1 = QHBoxLayout()
+        row1.setSpacing(6)
+        self.btn_play = QPushButton()
+        self.btn_play.setFixedSize(30, 28)
+        # 自訂圖示：停用狀態用較淺的灰（Qt 預設停用圖示偏深，醫療擁擠面板看起來像可點）
+        self.btn_play.setIcon(self._make_media_icon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.btn_play.setToolTip("播放 / 暫停（從紅線位置開始）")
+        self.btn_play.clicked.connect(self._toggle_play)
+        row1.addWidget(self.btn_play)
+        row1.addWidget(QLabel("倍速"))
+        self.speed_combo = QComboBox()
+        for r in ("0.25", "0.5", "1", "1.25", "1.5", "2", "2.5", "3"):
+            self.speed_combo.addItem(f"{r}x", float(r))
+        self.speed_combo.setCurrentIndex(2)  # 1x
+        self.speed_combo.setToolTip("播放倍速（變速會變調）")
+        self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
+        row1.addWidget(self.speed_combo)
+        self.play_time_label = QLabel("")
+        self.play_time_label.setStyleSheet("color:#555;")
+        row1.addStretch()
+        row1.addWidget(self.play_time_label)
+        outer.addLayout(row1)
+
+        # --- 第二行：音量 + 增益（兩條 slider 等寬：相同 stretch + 等寬標籤）---
+        row2 = QHBoxLayout()
+        row2.setSpacing(6)
+        lbl_vol = QLabel("音量")
+        self.vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vol_slider.setRange(0, 100)
+        self.vol_slider.setValue(80)
+        self.vol_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.vol_slider.setToolTip("音量（0~100%，衰減）")
+        self.vol_slider.valueChanged.connect(self._on_volume_changed)
+        lbl_gain = QLabel("增益")
+        self.gain_slider = QSlider(Qt.Orientation.Horizontal)
+        self.gain_slider.setRange(0, 48)          # 0~+48 dB
+        self.gain_slider.setValue(18)             # 預設 +18dB（≈8x），低電平錄音一開始就聽得到
+        self.gain_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.gain_slider.setToolTip("增益放大（0~+48dB，可即時調整；硬限幅不爆音）")
+        self.gain_slider.valueChanged.connect(self._on_gain_changed)
+        self.gain_label = QLabel("+18dB")
+        self.gain_label.setStyleSheet("color:#555;")
+        self.gain_label.setFixedWidth(46)
+        row2.addWidget(lbl_vol)
+        row2.addWidget(self.vol_slider, 1)        # stretch 1
+        row2.addWidget(lbl_gain)
+        row2.addWidget(self.gain_slider, 1)       # stretch 1（與音量等寬）
+        row2.addWidget(self.gain_label)
+        outer.addLayout(row2)
+
+        # 音訊播放 worker 在專用執行緒（readData 不被主執行緒重畫餓死 → 長軸不斷音）
+        self._audio_thread = None
+        self._audio_worker = None
+        # 主執行緒輪詢 worker 位置的計時器（合併式，不會像訊號那樣堆積卡死 UI）
+        self._play_ui_timer = QTimer(self)
+        self._play_ui_timer.setInterval(33)
+        self._play_ui_timer.timeout.connect(self._poll_worker_position)
+        if _HAS_MULTIMEDIA:
+            self._audio_thread = QThread(self)
+            self._audio_worker = _AudioWorker()
+            self._audio_worker.moveToThread(self._audio_thread)
+            self._audio_worker.ended.connect(self._on_worker_ended)
+            self._sig_aw_configure.connect(self._audio_worker.configure)
+            self._sig_aw_start.connect(self._audio_worker.start)
+            self._sig_aw_pause.connect(self._audio_worker.pause)
+            self._sig_aw_resume.connect(self._audio_worker.resume)
+            self._sig_aw_stop.connect(self._audio_worker.stop)
+            self._sig_aw_rate.connect(self._audio_worker.set_rate)
+            self._sig_aw_gain.connect(self._audio_worker.set_gain)
+            self._sig_aw_vol.connect(self._audio_worker.set_volume)
+            self._audio_thread.start()
+
+        self.audio_play_panel = panel
+        self._update_play_panel_enabled()
+        panel.setVisible(getattr(self, 'show_audio_play_panel', True))
+
+    @staticmethod
+    def _gain_from_db(db) -> float:
+        return float(10.0 ** (float(db) / 20.0))
+
+    def _audio_loaded(self) -> bool:
+        return bool(getattr(self, 'audio_sources', None))
+
+    def _backend_ready(self) -> bool:
+        """有 QtMultimedia 且有預設輸出裝置才算可播。"""
+        if not _HAS_MULTIMEDIA:
+            return False
+        try:
+            return not QMediaDevices.defaultAudioOutput().isNull()
+        except Exception:
+            return False
+
+    def _update_play_panel_enabled(self):
+        """無音頻 / 無後端 / 無輸出裝置時，播放控制置灰（面板仍顯示，不隱藏）。"""
+        en = self._audio_loaded() and self._backend_ready()
+        for w in (getattr(self, 'btn_play', None), getattr(self, 'vol_slider', None),
+                  getattr(self, 'gain_slider', None), getattr(self, 'speed_combo', None)):
+            if w is not None:
+                w.setEnabled(en)
+        lbl = getattr(self, 'play_time_label', None)
+        if lbl is not None:
+            if not _HAS_MULTIMEDIA:
+                lbl.setText("（缺 QtMultimedia，無法播放）")
+            elif not self._backend_ready():
+                lbl.setText("（無音訊輸出裝置）")
+            elif not self._audio_loaded():
+                lbl.setText("（尚未加入音頻）")
+            else:
+                lbl.setText("")
+
+    def _on_toggle_audio_play_panel(self, checked):
+        self.show_audio_play_panel = bool(checked)
+        if getattr(self, 'audio_play_panel', None) is not None:
+            self.audio_play_panel.setVisible(self.show_audio_play_panel)
+        if not checked:
+            self._pause_playback()
+
+    def _on_audio_ctrl_drag(self, dx: float, finished: bool):
+        """Ctrl+左鍵拖曳音頻波形 → 依拖曳的時間距離(dx 秒)增減音頻偏移。
+        往右拖(dx>0)→ 音頻延後、`source_offset_adjust['audio']` 增加；不動『起始絕對時間』(base)。
+        拖曳中 throttle ~30fps 重繪，放開即定案。"""
+        if not dx:
+            if finished:
+                self._update_view(immediate=True)
+            return
+        self.source_offset_adjust["audio"] = float(self.source_offset_adjust.get("audio", 0.0) or 0.0) + float(dx)
+        now = time.time()
+        if finished or (now - getattr(self, "_last_audio_drag_t", 0.0)) > 0.033:
+            self._last_audio_drag_t = now
+            self._update_view(immediate=True)
+        # 狀態列即時顯示目前音頻有效偏移，便於對齊
+        try:
+            self.statusBar().showMessage(
+                f"音頻偏移：{_fmt_signed_hms_ms(self.source_offset_adjust['audio'])}", 1500)
+        except Exception:
+            pass
+
+    def _red_line_pos(self) -> float:
+        """目前紅線(播放游標)應在的全域時間：
+        播放/暫停中(engaged) → playhead_time(絕對)；閒置 → 視窗內相對位置(time_start + frac*duration)。
+        相對模型 → 平移/縮放時間軸時紅線維持相對位置，按播放即播『目前看的位置』。"""
+        if getattr(self, '_playhead_engaged', False):
+            return float(getattr(self, 'playhead_time', 0.0) or 0.0)
+        frac = min(1.0, max(0.0, getattr(self, '_redline_frac', 0.5)))
+        return self.time_start + frac * self.time_duration
+
+    def _set_play_icon(self, playing: bool):
+        if getattr(self, 'btn_play', None) is None:
+            return
+        sp = (QStyle.StandardPixmap.SP_MediaPause if playing
+              else QStyle.StandardPixmap.SP_MediaPlay)
+        self.btn_play.setIcon(self._make_media_icon(sp))
+
+    def _play_end_frame(self) -> int:
+        """有效播放結尾(來源 frame)：取音檔長度與『錄音時間軸結尾』兩者較小。
+        音檔比錄音長時，超出 max_duration 的尾段無對應 PSG 時間軸 → 播到錄音結尾就收尾。"""
+        total = int(self._play_total)
+        md = float(getattr(self, 'max_duration', 0) or 0)
+        if md > 0:
+            audio_off = float(self.source_offset_adjust.get("audio", 0.0) or 0.0)
+            lim = int((md - audio_off) * self._play_fs)
+            total = min(total, max(0, lim))
+        return total
+
+    def _ensure_play_source(self) -> bool:
+        """設定 worker 的播放來源（第一個音頻來源的 PCM memmap）。變更時才重新 configure。"""
+        if not (self._backend_ready() and self._audio_loaded() and getattr(self, '_audio_worker', None) is not None):
+            return False
+        src = self.audio_sources[0]
+        mm = getattr(src, "_mm", None)
+        if mm is None:
+            return False
+        if self._play_src is not src:
+            self._play_src = src
+            self._play_mm = mm
+            self._play_total = int(mm.shape[0])
+            self._play_fs = int(getattr(src, "target_fs", 8000) or 8000)
+            self._sig_aw_configure.emit(mm, self._play_fs)
+        return True
+
+    def _toggle_play(self):
+        if not (self._backend_ready() and self._audio_loaded()):
+            return
+        if not self._ensure_play_source():
+            return
+        if self._play_active and not self._play_paused:   # 播放中 → 暫停
+            self._pause_playback()
+            return
+        if self._play_active and self._play_paused:        # 暫停中且未導航 → 續播
+            self._sig_aw_resume.emit()
+            self._play_paused = False
+        else:                                              # 全新開始：從紅線當下位置
+            audio_off = float(self.source_offset_adjust.get("audio", 0.0) or 0.0)
+            start_t = self._red_line_pos()
+            self.playhead_time = start_t
+            start_sample = max(0.0, (start_t - audio_off) * self._play_fs)
+            self._sig_aw_start.emit(
+                start_sample, self._play_end_frame(),
+                float(self.speed_combo.currentData() or 1.0),
+                self._gain_from_db(self.gain_slider.value()),
+                self.vol_slider.value() / 100.0,
+            )
+            self._play_active = True
+            self._play_paused = False
+        self._playhead_engaged = True
+        if getattr(self, '_play_ui_timer', None):
+            self._play_ui_timer.start()   # 開始輪詢 worker 位置以推進紅線
+        self._set_play_icon(True)
+
+    def _pause_playback(self):
+        """暫停鍵：suspend（保留 session 可 resume）。"""
+        if getattr(self, '_audio_worker', None) is None:
+            return
+        if getattr(self, '_play_ui_timer', None):
+            self._play_ui_timer.stop()
+        if self._play_active and not self._play_paused:
+            self._sig_aw_pause.emit()
+            self._play_paused = True
+        self._set_play_icon(False)
+
+    def _release_playhead(self):
+        """使用者手動導航（平移/縮放/slider/spin/概觀拖曳）時：停止播放（下次從紅線重新開始，不 resume）；
+        紅線回到『相對位置』行為（engaged=False），絕對時間隨視窗走。"""
+        was_engaged = getattr(self, '_playhead_engaged', False)
+        if getattr(self, '_play_ui_timer', None):
+            self._play_ui_timer.stop()
+        if getattr(self, '_audio_worker', None) is not None and self._play_active:
+            self._sig_aw_stop.emit()   # 真正 stop（非 suspend）→ 下次全新開始
+        self._play_active = False
+        self._play_paused = False
+        self._playhead_engaged = False
+        self._set_play_icon(False)
+        if was_engaged:
+            self._sync_red_markers()
+
+    def _on_redline_dragged(self, line):
+        """使用者直接拖曳波形上的紅線 → 設定紅線『相對位置』(frac)，並停止播放(下次從此處重新開始)。"""
+        if getattr(self, '_redline_dragging', False):
+            return
+        md = float(getattr(self, 'max_duration', 0) or 0)
+        val = float(line.value())
+        val = max(0.0, min(val, md)) if md > 0 else max(0.0, val)
+        if self.time_duration > 0:
+            self._redline_frac = min(1.0, max(0.0, (val - self.time_start) / self.time_duration))
+        self._playhead_engaged = False
+        self.playhead_time = val
+        # 拖過紅線視為導航：停掉播放，下次從新位置重新開始
+        if getattr(self, '_play_ui_timer', None):
+            self._play_ui_timer.stop()
+        if getattr(self, '_audio_worker', None) is not None and self._play_active:
+            self._sig_aw_stop.emit()
+        self._play_active = False
+        self._play_paused = False
+        self._set_play_icon(False)
+        # 同步所有軸的紅線到此絕對值（含概觀；setValue 不會再觸發 sigDragged）
+        self._redline_dragging = True
+        try:
+            for l in getattr(self, 'plot_red_lines', []) or []:
+                if l is not None and l is not line:
+                    l.setValue(val)
+            if hasattr(self, 'overview_vline'):
+                self.overview_vline.setValue(val)
+        finally:
+            self._redline_dragging = False
+        if getattr(self, 'play_time_label', None) is not None:
+            self.play_time_label.setText(self._fmt_time_pos(val, include_ms=True))
+
+    def _stop_and_clear_media(self):
+        """切換錄音/清除音頻時：停止播放並重置來源。
+        以 BlockingQueued 同步讓 worker 釋放 memmap → 確保之後刪臨時 PCM 檔不被佔用。"""
+        if getattr(self, '_play_ui_timer', None):
+            self._play_ui_timer.stop()
+        worker = getattr(self, '_audio_worker', None)
+        th = getattr(self, '_audio_thread', None)
+        if worker is not None:
+            done = False
+            if th is not None and th.isRunning() and QThread.currentThread() is not th:
+                try:
+                    QMetaObject.invokeMethod(worker, "release", Qt.ConnectionType.BlockingQueuedConnection)
+                    done = True
+                except Exception:
+                    done = False
+            if not done:
+                self._sig_aw_stop.emit()
+        self._play_active = False
+        self._play_paused = False
+        self._playhead_engaged = False
+        self._play_src = None
+        self._play_mm = None
+        self._play_total = 0
+        self._set_play_icon(False)
+        self._update_play_panel_enabled()
+
+    def _poll_worker_position(self):
+        """主執行緒每 33ms 輪詢 worker 的最新已播位置 → 推進紅線/捲動。
+        輪詢(非訊號推送)→ 主執行緒忙時計時器自動合併，不堆積、不凍結 UI；音訊在 worker 執行緒不受影響。"""
+        w = getattr(self, '_audio_worker', None)
+        if w is None or not getattr(self, '_playhead_engaged', False) or not self._play_active:
+            return
+        audio_off = float(self.source_offset_adjust.get("audio", 0.0) or 0.0)
+        self._set_playhead(audio_off + float(w._pos_sec))
+
+    def _on_worker_ended(self):
+        """播放到結尾：停止狀態，紅線停在結尾（保持 engaged，不跳回）。"""
+        if getattr(self, '_play_ui_timer', None):
+            self._play_ui_timer.stop()
+        self._play_active = False
+        self._play_paused = False
+        self._set_play_icon(False)
+
+    def _on_volume_changed(self, v):
+        if getattr(self, '_audio_worker', None) is not None:
+            self._sig_aw_vol.emit(max(0.0, min(1.0, v / 100.0)))
+
+    def _on_gain_changed(self, db):
+        if getattr(self, '_audio_worker', None) is not None:
+            self._sig_aw_gain.emit(self._gain_from_db(db))  # 即時生效
+        if getattr(self, 'gain_label', None) is not None:
+            self.gain_label.setText(f"+{int(db)}dB")
+
+    def _on_speed_changed(self, _idx):
+        if getattr(self, '_audio_worker', None) is not None:
+            self._sig_aw_rate.emit(float(self.speed_combo.currentData() or 1.0))  # 即時生效（worker 內重設基準）
+
+    def _set_playhead(self, t: float):
+        """把播放游標移到全域時間 t：移動所有軸的紅線；必要時捲動視窗（紅線越過中心才捲）。
+        與音訊解耦（供 worker 位置回呼與測試共用）。"""
+        md = float(getattr(self, 'max_duration', 0) or 0)
+        if md > 0:
+            t = max(0.0, min(t, md))
+        self.playhead_time = t
+        # 視窗捲動規則（只在紅線越過中心才捲）：
+        #   紅線在左半(off<=half) → 視窗不動，紅線往右掃；越過中心(off>half) → 捲動讓紅線維持中心；
+        #   紅線落在視窗左外(off<0) → 帶到左緣往右掃。結尾因夾住 max_start，紅線會續往右抵達右緣。
+        half = self.time_duration / 2.0
+        max_start = max(0.0, md - self.time_duration)
+        off = t - self.time_start
+        if off < 0:
+            desired = t                 # 紅線在視窗左外 → 帶到左緣
+        elif off > half:
+            desired = t - half          # 越過中心 → 維持置中
+        else:
+            desired = self.time_start   # 左半 → 視窗靜止，紅線往右掃
+        desired = max(0.0, min(desired, max_start))
+        if abs(desired - self.time_start) > 1e-6:
+            self.time_start = desired
+            self._update_time_controls()
+            self._update_view(immediate=True)   # 內含概觀更新(播放走輕量版)，不重複呼叫概觀
+        else:
+            # 視窗不動，僅移動紅線（便宜，不重載波形）
+            self._sync_red_markers()
+            if hasattr(self, 'overview_vline'):
+                self.overview_vline.setValue(t)
+        if getattr(self, 'play_time_label', None) is not None:
+            self.play_time_label.setText(self._fmt_time_pos(t, include_ms=True))
+
     def _on_toggle_antialias(self, checked):
         """切換波形抗鋸齒。關閉可在密集波形/大量通道時明顯加速繪製。
         即時套用：更新全域設定（供新建曲線）+ 重繪目前曲線（setData 會帶入新的 antialias）。
@@ -3468,23 +4593,63 @@ class PSGViewer(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("設定偏移量")
         lay = QVBoxLayout(dlg)
-        desc = QLabel("額外微調各來源標記的時間偏移。")
+        desc = QLabel("各來源時間偏移（正負／時／分／秒／毫秒 可分別調整）。\n"
+                      "音頻有效偏移 = 起始絕對時間 + 偏移調整（兩者互不影響、相加）。")
         desc.setWordWrap(True)
         lay.addWidget(desc)
         if edf_auto is not None:
             lay.addWidget(QLabel(f"（EDF已自動校時 {_fmt_signed_hms_ms(edf_auto)}）"))
 
+        from PyQt6.QtWidgets import QTimeEdit
+        from PyQt6.QtCore import QTime
+        from datetime import time as _dtime
+
+        origin = getattr(self.current_rec, "start_datetime", None)
+        # 音頻控制（起始絕對時間 + 偏移調整）的可用條件：沿用原本邏輯＝是否已加入音頻通道。
+        # 不符時仍顯示，只置灰，不隱藏。
+        audio_enabled = bool(getattr(self, "audio_channels", None))
+
         form = QFormLayout()
-        edf_spin = _OffsetSpinBox()
+
+        # 各偏移調整改為「正負 / 時 / 分 / 秒 / 毫秒」獨立欄位
+        edf_spin = _SplitOffsetWidget()
         edf_spin.setValue(float(self.source_offset_adjust.get("edf", 0.0)))
-        ndf_spin = _OffsetSpinBox()
+        ndf_spin = _SplitOffsetWidget()
         ndf_spin.setValue(float(self.source_offset_adjust.get("ndf", 0.0)))
-        evt_spin = _OffsetSpinBox()
+        evt_spin = _SplitOffsetWidget()
         evt_spin.setValue(float(getattr(self, "event_offset_adjust", 0.0)))
         form.addRow("EDF 偏移調整：", edf_spin)
         form.addRow("NDF 偏移調整：", ndf_spin)
         form.addRow("事件標記偏移：", evt_spin)
+
+        # 音頻：起始絕對時間（牆鐘 + ±天，預設＝概觀軸 min）在上；偏移調整在下。
+        # 兩者『相加且互不影響』：有效音頻偏移 = (起始絕對時間 - 原點) + 偏移調整。
+        audio_time_edit = QTimeEdit()
+        audio_time_edit.setDisplayFormat("HH:mm:ss.zzz")
+        audio_time_edit.setMinimumWidth(150)
+        audio_time_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
+        audio_day_spin = QSpinBox()
+        audio_day_spin.setRange(-7, 7)
+        audio_day_spin.setSuffix(" 天")
+        audio_day_spin.setToolTip("跨午夜時手動加減天數（相對錄音起始日）")
+        abs_row = QHBoxLayout()
+        abs_row.setContentsMargins(0, 0, 0, 0)
+        abs_row.addWidget(audio_time_edit)
+        abs_row.addWidget(audio_day_spin)
+        abs_row.addStretch()
+        abs_w = QWidget()
+        abs_w.setLayout(abs_row)
+        form.addRow("音頻 起始絕對時間：", abs_w)
+
+        audio_spin = _SplitOffsetWidget()
+        # 初始額外偏移 = 目前有效音頻偏移 - base
+        audio_spin.setValue(float(self.source_offset_adjust.get("audio", 0.0)) - float(getattr(self, "_audio_base_sec", 0.0)))
+        form.addRow("音頻 偏移調整：", audio_spin)
         lay.addLayout(form)
+
+        audio_time_edit.setEnabled(audio_enabled)
+        audio_day_spin.setEnabled(audio_enabled)
+        audio_spin.setEnabled(audio_enabled)
 
         def apply_edf(v):
             self.source_offset_adjust["edf"] = float(v)
@@ -3500,17 +4665,57 @@ class PSGViewer(QMainWindow):
             self._populate_events_table()
             self._update_view(immediate=True)
 
+        def _recompute_audio():
+            """有效音頻偏移 = base(起始絕對時間-原點) + 額外偏移調整。"""
+            self.source_offset_adjust["audio"] = float(self._audio_base_sec) + float(audio_spin.value())
+            self._update_view(immediate=True)
+
+        def apply_audio_extra(_v):
+            # 偏移調整：只改額外量，不動起始絕對時間
+            _recompute_audio()
+
+        def apply_abs(*_):
+            # 起始絕對時間：只改 base，不動偏移調整
+            if origin is None:
+                return
+            qt = audio_time_edit.time()
+            tt = _dtime(qt.hour(), qt.minute(), qt.second(), qt.msec() * 1000)
+            target = datetime.combine(origin.date(), tt) + timedelta(days=audio_day_spin.value())
+            self._audio_base_sec = (target - origin).total_seconds()
+            _recompute_audio()
+
+        # 初始：以目前 base 回填絕對時間選擇器（預設 base=0 → 顯示概觀軸 min）。
+        if origin is not None:
+            tgt = origin + timedelta(seconds=float(getattr(self, "_audio_base_sec", 0.0)))
+            audio_day_spin.blockSignals(True); audio_time_edit.blockSignals(True)
+            audio_day_spin.setValue((tgt.date() - origin.date()).days)
+            audio_time_edit.setTime(QTime(tgt.hour, tgt.minute, tgt.second, tgt.microsecond // 1000))
+            audio_day_spin.blockSignals(False); audio_time_edit.blockSignals(False)
+
         edf_spin.valueChanged.connect(apply_edf)
         ndf_spin.valueChanged.connect(apply_ndf)
         evt_spin.valueChanged.connect(apply_evt)
+        audio_spin.valueChanged.connect(apply_audio_extra)
+        audio_time_edit.timeChanged.connect(apply_abs)
+        audio_day_spin.valueChanged.connect(apply_abs)
 
         btns = QHBoxLayout()
         btn_reset = QPushButton("重設歸零")
 
         def do_reset():
-            edf_spin.setValue(0.0)
-            ndf_spin.setValue(0.0)
-            evt_spin.setValue(0.0)
+            # split widget 的 setValue 會 block 訊號 → 顯式套用
+            edf_spin.setValue(0.0); apply_edf(0.0)
+            ndf_spin.setValue(0.0); apply_ndf(0.0)
+            evt_spin.setValue(0.0); apply_evt(0.0)
+            audio_spin.setValue(0.0)   # 額外偏移歸零
+            # 起始絕對時間歸零 → base=0（＝概觀軸 min）
+            self._audio_base_sec = 0.0
+            if origin is not None:
+                audio_day_spin.blockSignals(True); audio_time_edit.blockSignals(True)
+                audio_day_spin.setValue(0)
+                audio_time_edit.setTime(QTime(origin.hour, origin.minute, origin.second, origin.microsecond // 1000))
+                audio_day_spin.blockSignals(False); audio_time_edit.blockSignals(False)
+            _recompute_audio()
 
         btn_reset.clicked.connect(do_reset)
         btn_close = QPushButton("關閉")
@@ -5015,6 +6220,16 @@ class PSGViewer(QMainWindow):
     def closeEvent(self, event):
         # PR4: 關閉前保存最後狀態（visible、time window）。（已取消 style/scale UI）
         self._save_current_prefs()
+        # 關閉音訊 worker 執行緒，避免殘留執行緒/崩潰
+        try:
+            if getattr(self, '_audio_worker', None) is not None:
+                self._sig_aw_stop.emit()
+            th = getattr(self, '_audio_thread', None)
+            if th is not None:
+                th.quit()
+                th.wait(1500)
+        except Exception:
+            pass
         event.accept()
 
 

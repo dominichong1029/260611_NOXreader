@@ -51,9 +51,13 @@ def build():
         # "--onefile",
 
         # 收集 Qt6 平台插件與資源（解決 "could not find or load the Qt platform plugin"）
+        # 註：--collect-all PyQt6 會一併收集 QtMultimedia DLL 與多媒體外掛（音頻播放面板所需）
         "--collect-all", "PyQt6",
         "--collect-all", "PyQt6-Qt6",
         "--collect-all", "pyqtgraph",
+        # 音頻通道：imageio_ffmpeg 內含 ffmpeg 執行檔（在 binaries/ 子目錄），
+        # 需 collect-all 才會一起打包，否則 exe 內「加入音頻通道」解碼會找不到 ffmpeg
+        "--collect-all", "imageio_ffmpeg",
 
         # 隱藏 imports（我們的後端 + 常見科學計算）
         "--hidden-import", "numpy",
@@ -68,6 +72,7 @@ def build():
         "--hidden-import", "openpyxl",
         "--hidden-import", "xlrd",
         "--hidden-import", "pyedflib",
+        "--hidden-import", "imageio_ffmpeg",
 
         # 讓 PyInstaller 能找到本機模組
         "--paths", str(ROOT),

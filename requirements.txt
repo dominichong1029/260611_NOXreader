@@ -11,6 +11,10 @@ python-docx>=0.8.11
 openpyxl>=3.0.0
 xlrd==1.2.0
 
+# 音頻通道：用內建 ffmpeg 解碼 wav/mp3/ogg/m4a/aac/flac（離線可用，免額外 native 相依）
+imageio-ffmpeg>=0.4.9
+# 音頻播放面板（概觀下方播放列）：QtMultimedia 隨 PyQt6 wheel 提供；缺外掛時面板顯示但停用
+
 # Notes:
 # - Python 3.10+ recommended (tested on 3.10 / 3.11 / 3.12)
 # - On Windows, install Python from python.org and check "Add python.exe to PATH"
